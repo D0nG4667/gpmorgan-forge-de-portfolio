@@ -1,0 +1,107 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gpmorgan-forge"
+version = "1.0.0"
+description = "GPMorgan Forge: Multi-Currency Core Banking, Double-Entry Ledger, Polyglot NoSQL/Graph Fraud Intelligence, and Distributed Data Platform"
+readme = "README.md"
+requires-python = ">=3.15"
+license = { file = "LICENSE" }
+authors = [
+    { name = "GPMorgan Forge Data Engineering Team" }
+]
+keywords = [
+    "fintech",
+    "banking",
+    "double-entry-ledger",
+    "postgresql",
+    "neo4j",
+    "mongodb",
+    "redis",
+    "distributed-databases",
+    "lakehouse"
+]
+dependencies = [
+    "sqlalchemy>=2.1.8",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.2.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.17.4",
+    "mypy>=2.4.1",
+    "rumdl>=0.3.2",
+]
+
+[project.scripts]
+forge-evidence = "gpmorgan_forge.evidence_generator:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gpmorgan_forge"]
+
+[tool.uv]
+no-binary-package = ["sqlalchemy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+strict = true
+addopts = "-ra -q --strict-markers"
+markers = [
+    "unit: Fast, isolated unit tests for domain models, cryptography, and policy primitives",
+    "integration: Multi-component database, concurrency, graph, and lakehouse integration tests",
+    "e2e: End-to-end portfolio evidence CLI, SQL/NoSQL artifact, and repository compliance tests",
+]
+
+[tool.rumdl]
+disable = ["MD013", "MD033"]
+
+[tool.coverage.run]
+source = ["src/gpmorgan_forge"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py315"
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+    "SIM", # flake8-simplify
+    "RUF", # Ruff-specific rules
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.15"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+mypy_path = "src"
+packages = ["gpmorgan_forge"]

@@ -1,0 +1,40 @@
+# =============================================================================
+# GPMorgan Forge — Lefthook Git Hooks Configuration
+# Reference: https://github.com/evilmartians/lefthook
+# =============================================================================
+
+min_version: 1.7.0
+
+pre-commit:
+  parallel: true
+  jobs:
+    - name: ruff-lint
+      glob: "*.py"
+      run: uv run ruff check {staged_files}
+      stage_fixed: true
+
+    - name: ruff-format
+      glob: "*.py"
+      run: uv run ruff format --check {staged_files}
+
+    - name: mypy-typecheck
+      glob: "*.py"
+      run: uv run mypy src tests
+
+    - name: markdown-lint
+      glob: "*.md"
+      run: uv run rumdl check {staged_files}
+
+    - name: repository-standards-audit
+      run: uv run python scripts/verify_commit_msg.py --audit-repo
+
+commit-msg:
+  jobs:
+    - name: conventional-commit-check
+      run: uv run python scripts/verify_commit_msg.py {1}
+
+pre-push:
+  parallel: true
+  jobs:
+    - name: pytest-100-coverage
+      run: uv run pytest --cov=src/gpmorgan_forge --cov-branch --cov-report=term-missing --cov-fail-under=100

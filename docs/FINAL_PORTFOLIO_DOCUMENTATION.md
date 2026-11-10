@@ -4,7 +4,7 @@
 **Programme**: Master of Information Technology (MIT)  
 **Academic Session**: 2026/2027 Academic Session, First Semester (September 2026 Cohort)  
 **Course Code & Title**: MIT 8103: Advanced Database Systems  
-**GitHub Repository URL**: <https://github.com/D0nG4667/GPMorgan-Forge-Portfolio>  
+**GitHub Repository URL**: <https://github.com/D0nG4667/gpmorgan-forge-de-portfolio>  
 **Selected Case Study / Organisation**: **Bank / Fintech Platform** (**GPMorgan Forge Multi-Currency Core Banking & Polyglot Financial Intelligence Platform**)
 
 ---
@@ -30,9 +30,10 @@ flowchart LR
     end
 
     subgraph Engine["GPMorgan Forge Domain Layer (Python 3.15 / SQLAlchemy 2.1)"]
-        OPS["Core Ledger Engine (operations.py)"]
+        OPS["Core Ledger & Query Engine (operations.py, query_optimizer.py)"]
         CONC["Concurrency & Lock Manager (concurrency.py)"]
-        PRIV["Distributed, RBAC/RLS & Privacy Engine (distributed_privacy.py)"]
+        NOSQL["Polyglot NoSQL & Telemetry Engine (nosql_models.py)"]
+        PRIV["Distributed, RBAC/RLS, Privacy & ZKP Engine (distributed_privacy.py, identity.py, zkp.py)"]
     end
 
     subgraph Polyglot["Polyglot Persistence Tier"]
@@ -44,26 +45,28 @@ flowchart LR
     end
 
     subgraph Lakehouse["Stateful Streaming & Open Table Medallion Lakehouse (Bronze -> Silver -> Gold)"]
-        KAFKA[["Apache Kafka 4.0 (KRaft) CDC Event Bus"]]
+        KAFKA[["Apache Kafka 4.0 (KRaft) + Debezium CDC Event Bus"]]
         FLINK[["Apache Flink (Sub-Second Keyed Velocity Filter)"]]
-        BRONZE[("Bronze Data Lake (S3 / HDFS Raw Apache Iceberg)")]
-        SILVER[["Silver Lakehouse (Spark 4.0 + Apache Iceberg + Apache Polaris + Trino)"]]
+        SPARK[["Apache Spark 4.0 Structured Streaming"]]
+        BRONZE[("Bronze & DLQ Tables (Apache Iceberg Raw Append & Quarantine)")]
+        SILVER[["Silver Lakehouse (Apache Iceberg + Apache Polaris + Trino)"]]
         GOLD[("Gold Data Warehouse (Airflow + dbt Star Schema + OpenLineage BCBS 239)")]
     end
 
     APP & RAILS --> OPS
     COMP --> PRIV
-    OPS --> CONC
+    OPS --> CONC & NOSQL
     CONC -->|"ACID Repeatable Read / Serializable"| PG
-    OPS -->|"Two-Tier Idempotency & Cache"| REDIS
-    OPS -->|"Polymorphic KYC & AEAD Ciphertext"| MONGO
-    OPS -->|"Index-Free Adjacency Traversal"| NEO
-    OPS -->|"FX Ticks & Read-Only Timeline"| CASS
-    PG -->|"Transactional CDC"| KAFKA
+    NOSQL -->|"Two-Tier Idempotency & Cache"| REDIS
+    NOSQL -->|"Polymorphic KYC & AEAD Ciphertext"| MONGO
+    NOSQL -->|"Index-Free Adjacency Traversal"| NEO
+    NOSQL -->|"FX Ticks & Read-Only Timeline"| CASS
+    PG -->|"Debezium Transactional CDC"| KAFKA
     KAFKA -->|"Sub-Second Stream"| FLINK
     FLINK -->|"Trigger on Velocity Breach"| NEO
-    KAFKA -->|"Raw Append (Schema-on-Read)"| BRONZE
-    BRONZE -->|"Spark 4.0 Micro-Batch"| SILVER
+    KAFKA -->|"Micro-Batch Stream"| SPARK
+    SPARK -->|"Raw Append & DLQ"| BRONZE
+    SPARK -->|"ACID MERGE INTO"| SILVER
     SILVER -->|"Curated Star Schema (Schema-on-Write)"| GOLD
 ```
 
@@ -75,8 +78,8 @@ Database access is governed by a defense-in-depth combination of **Role-Based Ac
 | :--- | :--- | :--- |
 | **Retail, SME & Corporate Customers** (`forge_customer`) | View account balances, fund wallets, initiate transfers, whitelist beneficiaries, manage cards and privacy consents. | Strictly isolated via RLS (`pol_customers_customer_isolation`, `pol_accounts_customer_isolation`) to rows matching `current_setting('app.current_customer_id')`. |
 | **Core Payment & Ledger Service** (`forge_core_service`) | Execute atomic transfers, deposits, withdrawals, contra-entry reversals, and append double-entry legs and audit hashes. | `SELECT`, `INSERT`, `UPDATE` on operational tables; strictly append-only (`INSERT` only) on `ledger_entries` and `transaction_audit_logs`. |
-| **Compliance Officers & DPOs** (`forge_compliance_dpo`) | Vet KYC dossiers, investigate AML fraud alerts, verify trial balances, and execute statutory Right-to-Erasure requests. | Jurisdiction-scoped ABAC RLS (`pol_customers_dpo_jurisdiction` via `app.actor_country`); `EXECUTE` privilege on `anonymise_customer_pii()`. |
-| **Financial & BI Analysts** (`forge_analyst`) | Run aggregate corridor liquidity, cohort, and velocity analytics on read replicas and materialised views. | Zero base-table PII access; restricted exclusively to dynamically masked views (`v_masked_customers`, `v_masked_payment_cards`) and materialised views. |
+| **Compliance Officers & DPOs** (`forge_compliance_dpo`) | Vet KYC dossiers, investigate AML fraud alerts, verify trial balances, and execute statutory Right-to-Erasure requests. | Jurisdiction-scoped ABAC RLS (`pol_customers_dpo_jurisdiction` via `app.actor_country`); authorised via `AccessControlEngine` (`can_execute_erasure`) for the `anonymise_customer_pii()` workflow. |
+| **Financial & BI Analysts** (`forge_analyst`) | Run aggregate corridor liquidity, cohort, and velocity analytics on read replicas and masked views. | Raw PII tables (`customers`, `kyc_records`, `payment_cards`) revoked; SQL access granted exclusively to dynamically masked views (`v_masked_customers`, `v_masked_payment_cards`) alongside analytical rollups. |
 | **Database Administrators & SREs** (`forge_admin`) | Manage schema migrations, declarative partition lifecycle, index tuning, WAL streaming replication, and PITR recovery. | Administrative DDL and operational supervision with all state transitions captured in immutable cryptographic audit logs. |
 
 ### 1.4 Major Data Stored (Nature of the Database)
@@ -106,7 +109,7 @@ Database access is governed by a defense-in-depth combination of **Role-Based Ac
 
 - **Core Artefacts**: [`portfolio-1-database-design/schema.sql`](../portfolio-1-database-design/schema.sql), [`portfolio-1-database-design/seed_data.sql`](../portfolio-1-database-design/seed_data.sql), [`portfolio-1-database-design/README.md`](../portfolio-1-database-design/README.md), [`src/gpmorgan_forge/models.py`](../src/gpmorgan_forge/models.py), and [`docs/adr/0001-double-entry-immutable-ledger.md`](adr/0001-double-entry-immutable-ledger.md).
 - **Relational Schema & Key Architecture**: The core banking schema models **10 relational tables** in **PostgreSQL 18** (`customers`, `kyc_records`, `consent_records`, `accounts`, `beneficiaries`, `payment_cards`, `transactions`, `ledger_entries`, `transaction_audit_logs`, and `fraud_alerts`) alongside custom domain `ENUM` types (`customer_segment`, `kyc_tier_level`, `currency_code`, `account_type`, `account_status`, `transaction_type`, `transaction_status`, `entry_direction`, and `risk_severity`). Surrogate 128-bit UUID primary keys (`gen_random_uuid()`) prevent sequence-enumeration attacks and enable collision-free distributed sharding, while natural business keys are enforced via `UNIQUE NOT NULL` constraints (`external_ref`, `email`, `phone_e164`, `bvn_sha256`, 10-digit NUBAN `account_number`, `idempotency_key`, `reference_code`, and composite `(transaction_id, entry_sequence)`).
-- **Domain, Referential & Immutability Constraints**: All monetary columns (`balance`, `available_balance`, `daily_transfer_limit`, `amount`, `fee_amount`, `balance_before`, `balance_after`) use fixed-point **`NUMERIC(19, 4)`** arithmetic, eliminating IEEE 754 floating-point representation drift (Coronel & Morris, 2023; Silberschatz et al., 2020). Five `CHECK` constraints and two database triggers enforce accounting and regulatory invariants directly inside the storage engine:
+- **Domain, Referential & Immutability Constraints**: All monetary columns (`balance`, `available_balance`, `daily_transfer_limit`, `spending_limit`, `amount`, `fee_amount`, `balance_before`, `balance_after`) use fixed-point **`NUMERIC(19, 4)`** arithmetic, eliminating IEEE 754 floating-point representation drift (Coronel & Morris, 2023; Silberschatz et al., 2020). Seventeen `CHECK` constraints (five core accounting and PCI-DSS invariants highlighted below) and two database triggers enforce domain invariants directly inside the storage engine:
   1. `chk_accounts_non_negative_customer_balance`: Prohibits negative balances (`balance >= 0 AND available_balance >= 0`) on customer-owned accounts while permitting institutional `SETTLEMENT_GL` accounts to hold net debit positions.
   2. `chk_transactions_distinct_accounts`: Prevents circular self-transfers (`source_account_id <> destination_account_id`).
   3. `chk_transactions_positive_amount`: Enforces strictly positive transfer amounts (`amount > 0`) and non-negative fees (`fee_amount >= 0`).
@@ -129,15 +132,15 @@ Database access is governed by a defense-in-depth combination of **Role-Based Ac
   - **Q2 (Rolling 24-Hour Outbound Velocity & Daily Limit Utilisation)**: Evaluates `RANGE BETWEEN INTERVAL '24 hours' PRECEDING AND CURRENT ROW` window frames to flag rapid structuring anomalies.
   - **Q3 (Global Double-Entry Trial Balance Reconciliation)**: Aggregates all `500,000` ledger legs across `SETTLEMENT_GL` (`-16,500,000.0000` NGN) and customer accounts (`+16,500,000.0000` NGN), confirming `total_credits = 19,250,000.0000`, `total_debits = 19,250,000.0000`, and `reconciliation_discrepancy = 0.0000`.
   - **Q4-Q6 (Customer 360 Liquidity Ranking, Reversal Lineage Self-Join, and Corridor Rollup)**: Queries `mv_customer_liquidity_360` and `mv_daily_corridor_settlement` refreshed via `REFRESH MATERIALIZED VIEW CONCURRENTLY`.
-- **Indexing Strategy & Cost-Based Query Plan Analysis**: Drawing on cost-based cardinality estimation, join-order selection (`Hash Join` vs. `Nested Loop`), and physical index access-path optimisation (Dombrovskaya et al., 2024; Leis et al., 2015; PostgreSQL Global Development Group, 2025), four targeted index structures and two materialised views were engineered and benchmarked using `EXPLAIN (ANALYZE, BUFFERS, COSTS, TIMING)` over `250,000` transactions and `500,000` ledger entries:
+- **Indexing Strategy & Cost-Based Query Plan Analysis**: Drawing on cost-based cardinality estimation, join-order selection (`Hash Join` vs. `Nested Loop`), and physical index access-path optimisation (Dombrovskaya et al., 2024; Leis et al., 2015; PostgreSQL Global Development Group, 2025), nine base-table indexes (five covering B-Trees, three partial B-Trees, and one `jsonb_path_ops` GIN index) and two uniquely indexed materialised views were engineered in [`indexes_and_views.sql`](../portfolio-2-query-optimisation/indexes_and_views.sql) and benchmarked across five representative index access paths (`P1`–`P5`, pairing `queries.sql` workloads `Q1`, `Q2`, and `Q6` with partial-pipeline and JSONB micro-benchmarks) using `EXPLAIN (ANALYZE, BUFFERS, COSTS, TIMING)` over `250,000` transactions and `500,000` ledger entries:
 
-| Workload / Query | Unoptimised Execution Plan | Optimised Execution Plan & Index Structure | Latency (Before) | Latency (After) | Speedup Factor | Shared Buffers (`Read+Hit`) |
+| Benchmark Workload | Unoptimised Execution Plan | Optimised Execution Plan & Index Structure | Latency (Before) | Latency (After) | Speedup Factor | Shared Buffers (`Read+Hit`) |
 | :--- | :--- | :--- | ---: | ---: | ---: | :--- |
-| **Q1: Chronological Statement & Running Balance** | `Seq Scan` on `ledger_entries` + `Hash Join` + external `Sort` | `Nested Loop` + `Index Only Scan` on covering B-Tree `idx_ledger_entries_account_created_covering` (`Heap Fetches: 0`) | `68.71 ms` | `0.44 ms` | **`156.2x`** | `6,434` $\to$ `14` |
-| **Q2: 24h Outbound Velocity AML Window** | Full table `Seq Scan` + `Sort` | `Index Only Scan` on `idx_transactions_source_created_covering` (`INCLUDE (amount, fee_amount, currency, status)`) | `54.18 ms` | `0.82 ms` | **`66.1x`** | `4,890` $\to$ `28` |
-| **Q3: Active Settlement Pipeline Poll** | `Seq Scan` (`Rows Removed by Filter: 249,955`, 99.98% waste) | `Index Scan` on partial index `pidx_transactions_active_pipeline` (`WHERE status IN ('PENDING', 'FLAGGED')`) | `34.92 ms` | `0.12 ms` | **`291.0x`** | `4,100` $\to$ `6` |
-| **Q4: JSONB Webhook Channel Filter** | `Seq Scan` + per-row JSONB parsing | `Bitmap Index Scan` on inverted index `gin_transactions_metadata_jsonb` (`USING GIN (metadata_json jsonb_path_ops)`) | `41.60 ms` | `0.65 ms` | **`64.0x`** | `4,100` $\to$ `19` |
-| **Q6: Daily Corridor Settlement Rollup** | Full multi-table `HashAggregate` scan | Pre-computed `mv_daily_corridor_settlement` indexed by `uq_mv_daily_corridor_settlement` | `112.40 ms` | `0.19 ms` | **`591.6x`** | `9,250` $\to$ `4` |
+| **P1 (`Q1`): Chronological Statement & Running Balance** | `Seq Scan` on `ledger_entries` + `Hash Join` + external `Sort` | `Nested Loop` + `Index Only Scan` on covering B-Tree `idx_ledger_entries_account_created_covering` (`Heap Fetches: 0`) | `68.71 ms` | `0.44 ms` | **`156.2x`** | `6,434` $\to$ `14` |
+| **P2 (`Q2`): 24h Outbound Velocity AML Window** | Full table `Seq Scan` + `Sort` | `Index Only Scan` on `idx_transactions_source_created_covering` (`INCLUDE (amount, fee_amount, status, transaction_type, reference_code)`) | `54.18 ms` | `0.82 ms` | **`66.1x`** | `4,890` $\to$ `28` |
+| **P3: Active Settlement Pipeline Poll** | `Seq Scan` (`Rows Removed by Filter: 249,955`, 99.98% waste) | `Index Scan` on partial index `pidx_transactions_active_pipeline` (`WHERE status IN ('PENDING', 'FLAGGED')`) | `34.92 ms` | `0.12 ms` | **`291.0x`** | `4,100` $\to$ `6` |
+| **P4: JSONB Webhook Channel Filter** | `Seq Scan` + per-row JSONB parsing | `Bitmap Index Scan` on inverted index `gin_transactions_metadata_jsonb` (`USING GIN (metadata_json jsonb_path_ops)`) | `41.60 ms` | `0.65 ms` | **`64.0x`** | `4,100` $\to$ `19` |
+| **P5 (`Q6`): Daily Corridor Settlement Rollup** | Full multi-table `HashAggregate` scan | Pre-computed `mv_daily_corridor_settlement` indexed by `uidx_mv_daily_corridor_settlement` | `112.40 ms` | `0.19 ms` | **`591.6x`** | `9,250` $\to$ `4` |
 
 ---
 
@@ -156,8 +159,8 @@ Database access is governed by a defense-in-depth combination of **Role-Based Ac
 
 - **Core Artefacts**: [`portfolio-4-nosql/mongodb_document_model.js`](../portfolio-4-nosql/mongodb_document_model.js), [`portfolio-4-nosql/neo4j_fraud_graph.cypher`](../portfolio-4-nosql/neo4j_fraud_graph.cypher), [`portfolio-4-nosql/redis_caching_patterns.conf`](../portfolio-4-nosql/redis_caching_patterns.conf), [`portfolio-4-nosql/cassandra_timeline_projection.cql`](../portfolio-4-nosql/cassandra_timeline_projection.cql), [`portfolio-4-nosql/nosql_evidence.md`](../portfolio-4-nosql/nosql_evidence.md), [`src/gpmorgan_forge/nosql_models.py`](../src/gpmorgan_forge/nosql_models.py), and [`docs/adr/0002-polyglot-persistence-postgres-mongo-neo4j-redis.md`](adr/0002-polyglot-persistence-postgres-mongo-neo4j-redis.md).
 - **Polyglot NoSQL Architecture & Suitability Analysis**: While PostgreSQL 18 (and CockroachDB) guarantees strict ACID serialisability for the general ledger, forcing polymorphic KYC documents, sub-millisecond idempotency locks, read-only mobile timeline projections, high-frequency FX tick streams, or multi-hop fraud ring traversals into relational tables introduces sparse-column bloat, lock contention, and exponential join latency (Besta et al., 2023; Kleppmann, 2017; Sadalage & Fowler, 2012). GPMorgan Forge integrates five specialised NoSQL and time-series engines on the same banking domain:
-  1. **MongoDB 8.0 LTS Document Store (`DocumentStoreEngine`)**: Persists `kyc_verifications` (polymorphic Nigerian BVN/NIN, UK Passport, and US SSN payloads, nested biometric liveness vectors, and sanctions screening arrays) and `device_telemetry_events`. Enforces structural integrity via `$jsonSchema` validation (`validationLevel: "strict"`), protects sensitive national IDs via **Client-Side Field-Level Encryption (CSFLE)** (`AEAD_AES_256_GCM` with KMS key `kms-ng-cbn-key-2026-01`), and automatically purges stale telemetry after 90 days via a TTL index (`expireAfterSeconds: 7776000`) (MongoDB, Inc., 2024).
-  2. **Neo4j 5.26 LTS Property Graph (`GraphFraudEngine`)**: Models `:Customer`, `:Account`, `:Device`, and `:FinancialProduct` nodes connected by `:OWNS`, `:TRANSFERRED_TO`, `:USED_DEVICE`, and `:SUBSCRIBED_TO` edges (Besta et al., 2023; Neo4j, Inc., 2024; Robinson et al., 2015). Using **index-free adjacency** ($O(d^k)$ local pointer traversal), Cypher query `[:TRANSFERRED_TO*2..5]` with canonical cycle deduplication (`origin.account_number <= n.account_number`) detects the 3-hop circular money-laundering ring `["9000000011", "9000000012", "9000000013", "9000000011"]` (`14,700,000.00 NGN`) in **`1.8 ms`** (versus `86.5 ms` for 3-hop and `4,820.0 ms` for 5-hop relational SQL recursive joins, a **`97.9%` to `99.8%` latency reduction**). A companion Cypher traversal isolates shared emulator mule farm `DEV-ANDROID-MULE-FARM-99` across three accounts in **`1.2 ms`** and generates collaborative filtering product recommendations (`PROD-FX-FORWARD`, `PROD-TBILLS-90D`).
+  1. **MongoDB 8.0 LTS Document Store (`DocumentStoreEngine`)**: Persists `kyc_verifications` (polymorphic Nigerian BVN/NIN, UK Passport, and US SSN payloads, nested biometric liveness vectors, and document checksum arrays) and `device_telemetry_events`. Enforces structural integrity via `$jsonSchema` validation, protects sensitive national IDs via application-layer **Client-Side Field-Level Encryption (CSFLE / AEAD)** (`AEAD_AES_256_GCM`, `ENCv2:<key_id>:<base64url>` derived via `HKDF-SHA256` with KMS key ID `kms-ng-cbn-key-2026-01`), and automatically purges stale telemetry after 90 days via a TTL index on `captured_at` (`expireAfterSeconds: 7776000`) (MongoDB, Inc., 2024).
+  2. **Neo4j 5.26 LTS Property Graph (`GraphFraudEngine`)**: Models `:Customer`, `:Account`, `:Device`, and `:FinancialProduct` nodes connected by `:OWNS_ACCOUNT`, `:TRANSFERRED_TO`, `:USED_DEVICE`, `:PARTNERS_WITH`, and `:SUBSCRIBED_TO` edges (Besta et al., 2023; Neo4j, Inc., 2024; Robinson et al., 2015). Using **index-free adjacency** ($O(d^k)$ local pointer traversal), Cypher query `[:TRANSFERRED_TO*2..5]` with canonical cycle deduplication (`origin.account_number <= n.account_number`) detects the 3-hop circular money-laundering ring `["9000000011", "9000000012", "9000000013", "9000000011"]` (`14,700,000.00 NGN`) in **`1.8 ms`** (versus `86.5 ms` for 3-hop and `4,820.0 ms` for 5-hop relational SQL recursive joins, a **`97.9%` to `99.8%` latency reduction**). A companion Cypher traversal isolates shared emulator mule farm `DEV-ANDROID-MULE-FARM-99` across three accounts in **`1.2 ms`** and generates collaborative filtering product recommendations (`PROD-FX-FORWARD`, `PROD-TBILLS-90D`).
   3. **Redis 8.0 / Valkey Two-Tier Idempotency & Rate-Limiting Store (`KeyValueStoreEngine`)**: Implements a **Two-Tier Idempotency Defence** (`verify_two_tier_idempotency()`): Tier 1 uses Redis 8.0 / Valkey `SET forge:idemp:<key> <payload> NX EX 86400` as a sub-millisecond in-memory fast-path filter (`TIER_1_REDIS_VALKEY_FAST_PATH`), while Tier 2 enforces the mandatory durable `uq_transactions_idempotency_key` constraint in PostgreSQL 18 / CockroachDB (`TIER_2_POSTGRES_UNIQUE_CONSTRAINT`) so cache TTL eviction or node failover never permits duplicate settlement. Also provides read-through balance caching (`TTL 60s` with immediate `DEL` invalidation on ledger writes) and sliding-window API rate limiting (`10 requests / 60s`) using sorted sets (`ZREMRANGEBYSCORE`, `ZADD`, `ZCARD`) (Redis Ltd., 2025).
   4. **Apache Cassandra 5.0 Wide-Column Timeline Projection (`WideColumnTimelineEngine`)**: Defined in [`cassandra_timeline_projection.cql`](../portfolio-4-nosql/cassandra_timeline_projection.cql) (`PRIMARY KEY ((account_id, bucket_month), created_at, transaction_id) WITH CLUSTERING ORDER BY (created_at DESC, transaction_id ASC)`), Cassandra is restricted **strictly to read-only, append-only customer transaction timeline projections** fed asynchronously via Kafka CDC (`append_cdc_timeline_event()`, `query_account_timeline()`) and is explicitly prohibited from storing mutable balance state (`forbid_mutable_balance_update()`) (Apache Software Foundation, 2025).
   5. **TimescaleDB Hypertables & Continuous Aggregates (`TimeSeriesTelemetryEngine`)**: Defined in [`partitioning_and_sharding.sql`](../portfolio-5-distributed-cloud/partitioning_and_sharding.sql) (`fx_liquidity_ticks`, `create_hypertable`, and `mv_fx_liquidity_hourly WITH (timescaledb.continuous)` using `time_bucket('1 hour', tick_time)`), TimescaleDB ingests high-frequency FX rate ticks (`USD/NGN`) and pre-computes hourly OHLCV liquidity candlesticks (`compute_hourly_continuous_aggregate()`).
@@ -172,11 +175,11 @@ Database access is governed by a defense-in-depth combination of **Role-Based Ac
 - **Stateful Stream Processing (`Apache Flink`) & Open Table Medallion Lakehouse (`Apache Iceberg` + `Apache Polaris` + `Spark 4.0` + `Trino` + `Airflow/dbt` + `OpenLineage`)**:
   1. **Real-Time Stateful Stream Filtering (`FlinkStatefulVelocityEngine`)**: Before invoking multi-hop Cypher traversals in Neo4j 5.26 LTS, **Apache Flink** consumes **Apache Kafka 4.0 (KRaft)** payment streams (`forge.cdc.transactions`) using keyed RocksDB sliding-window state (`process_stream_event()`, `1.15 ms`) to detect sub-second velocity and structuring spikes (`flink_neo4j_trigger_activated = True`) (Carbone et al., 2015).
   2. **Open Table Format, Catalog Versioning & Time-Travel Audits (`MedallionLakehousePipeline`)**: Implementing the modern Lakehouse paradigm (Apache Software Foundation, 2025; Armbrust et al., 2021), raw CDC events land in an **S3/HDFS Bronze Data Lake** and are enriched by **Apache Spark 4.0 Structured Streaming** into **Apache Iceberg** Silver tables governed by **Apache Polaris** REST catalog (providing fine-grained RBAC, short-lived storage credential vending, and native Iceberg table-level branching/tagging `main`, `audit-2026-q4`; selected as the primary ASF catalog over Project Nessie for zero-trust credential vending across multi-engine compute). Regulators and auditors execute ACID time-travel queries (`FOR SYSTEM_TIME AS OF` / `FOR SYSTEM_VERSION AS OF`, `query_iceberg_time_travel()`) against immutable snapshots (`iceberg-snap-ca321ab81df9`).
-  3. **Federated Query, Orchestration & Lineage Governance**: **Trino** executes zero-ETL federated SQL queries (`execute_trino_federated_query()`) across Iceberg, PostgreSQL, MongoDB, and Cassandra (Sethi et al., 2019); **Apache Airflow** and **dbt** orchestrate Gold Star-Schema Data Warehouse transformations; and **OpenLineage** emits column-level provenance (`f331bf50-5122-54f7-acde-b40f2c1efd58`) enforcing **BCBS 239** risk data aggregation principles (Basel Committee on Banking Supervision, 2013), **NDPA 2023**, and **GDPR**.
+  3. **Federated Query, Orchestration & Lineage Governance**: **Trino** executes zero-ETL federated SQL queries (`execute_trino_federated_query()`) across Iceberg, PostgreSQL, MongoDB, and Cassandra (Sethi et al., 2019); **Apache Airflow** and **dbt** orchestrate Gold Star-Schema Data Warehouse transformations; and **OpenLineage** emits dataset and run-level provenance (`f331bf50-5122-54f7-acde-b40f2c1efd58`) enforcing **BCBS 239** risk data aggregation principles (Basel Committee on Banking Supervision, 2013), **NDPA 2023**, and **GDPR**.
   4. **Distributed Database Observability (`DatabaseTelemetryTracer`)**: An OpenTelemetry-compatible tracer records W3C TraceContext spans across `redis_valkey -> postgresql_cockroachdb -> kafka_kraft -> apache_flink -> neo4j_cypher -> apache_iceberg_trino` (`6 spans`, `10.50 ms` total pipeline latency, `otel_sla_under_50ms_met = True`).
 - **Defense-in-Depth Security & Privacy Engineering**:
-  1. **RBAC, ABAC & PostgreSQL 18 RLS**: Five least-privilege roles with `ENABLE ROW LEVEL SECURITY` and `FORCE ROW LEVEL SECURITY` on `customers`, `accounts`, `transactions`, and `ledger_entries`, paired with RFC 6238 TOTP and OIDC JWT (`RS256`/`EdDSA`) step-up MFA enforcement in [`src/gpmorgan_forge/identity.py`](../src/gpmorgan_forge/identity.py).
-  2. **Dynamic PII Masking**: Views `v_masked_customers` (`full_name='Ch***'`, `email='ch***@example.ng'`, `phone='+234******3303'`) and `v_masked_payment_cards` (`XXXX-XXXX-XXXX-4821`).
+  1. **RBAC, ABAC & PostgreSQL 18 RLS**: Five least-privilege roles with `ENABLE ROW LEVEL SECURITY` and `FORCE ROW LEVEL SECURITY` on `customers` and `accounts` (`pol_customers_customer_isolation`, `pol_customers_dpo_jurisdiction`, `pol_accounts_customer_isolation`), paired with RFC 6238 TOTP and OIDC JWT (`RS256`/`EdDSA`) step-up MFA enforcement in [`src/gpmorgan_forge/identity.py`](../src/gpmorgan_forge/identity.py).
+  2. **Dynamic PII Masking**: Views `v_masked_customers` (`masked_name='Ch***'`, `masked_email='ch***@example.ng'`, `masked_phone='+234******3303'`) and `v_masked_payment_cards` (`XXXX-XXXX-XXXX-4821`).
   3. **NDPA 2023 / GDPR Right-to-Erasure (`anonymise_customer_pii`)**: Irreversibly replaces customer PII with deterministic cryptographic tokens (`REDACTED_8a4f91c2b0e1`), revokes active consents, and sets `is_anonymised = TRUE` while preserving statutory `ledger_entries` for Central Bank of Nigeria 7-year audit retention (Central Bank of Nigeria, 2022; Federal Republic of Nigeria, 2023).
   4. **$\epsilon$-Differential Privacy & Zero-Knowledge Proofs (ZKPs)**: Adds calibrated Laplace noise $\text{Lap}(\Delta f / \epsilon)$ ($\epsilon = 1.0$, true mean `4,125,000.00` $\to$ noised output `4,122,321.95`) to prevent membership-inference attacks on aggregate regulatory extracts (Dwork & Roth, 2014), and verifies non-interactive `secp256k1` Pedersen commitment ($C = vG + rH$) + Cramer-Damgård-Schoenmakers bit-decomposition OR-proofs with `Ed25519` KYC authority signatures in [`src/gpmorgan_forge/zkp.py`](../src/gpmorgan_forge/zkp.py) (`kyc_tier >= TIER_2 AND age >= 18`, `zkp_verified = True`) to attest KYC compliance without disclosing raw birthdates or BVN strings (Ernstberger et al., 2024).
 
@@ -204,10 +207,18 @@ All five portfolio pillars are continuously verified by a **3-tier automated tes
     "corridor_rollup_groups": 4,
     "benchmark": {
       "query_name": "Q1_CHRONOLOGICAL_ACCOUNT_STATEMENT",
-      "speedup_factor": 156.16
+      "speedup_factor": 156.16,
+      "actual_plan_steps": [
+        "SEARCH a USING INDEX sqlite_autoindex_accounts_2 (account_number=?)",
+        "SEARCH le USING INDEX idx_ledger_account_seq (account_id=?)"
+      ]
     }
   },
   "portfolio_3_concurrency": {
+    "canonical_lock_order": [
+      "47bbeb85-d60c-4f47-9663-8d8ab4f6e382",
+      "82aaf6ef-899e-4948-8953-07f4974fe760"
+    ],
     "deadlock_prevented": true,
     "worker_a_committed": true,
     "worker_b_conflict_detected": true,
@@ -318,7 +329,7 @@ To uphold scholarly transparency and academic integrity throughout the engineeri
   - [`portfolio-5-distributed-cloud/`](../portfolio-5-distributed-cloud/README.md)
 - [x] **Executable SQL, NoSQL & Python Implementations with Empirical Evidence**: Verified via PostgreSQL 18, CockroachDB, MongoDB 8.0 LTS, Neo4j 5.26 LTS, Redis 8.0 / Valkey, Apache Cassandra 5.0, TimescaleDB, Apache Iceberg (Apache Polaris), [`evidence_generator.py`](../src/gpmorgan_forge/evidence_generator.py), and each portfolio's `*_evidence.md` report.
 - [x] **Comprehensive Architecture Documentation**: Root [`README.md`](../README.md), five portfolio `README.md` guides, [`BDR.md`](BDR.md), [`PRODUCTION_DEPLOYMENT.md`](PRODUCTION_DEPLOYMENT.md), and 6 Architecture Decision Records ([`docs/adr/`](adr/0001-double-entry-immutable-ledger.md)).
-- [x] **Accessible GitHub Repository with Progressive Commit History**: Hosted at <https://github.com/D0nG4667/GPMorgan-Forge-Portfolio> with feature-branch Conventional Commits merged into `main`.
+- [x] **Accessible GitHub Repository with Progressive Commit History**: Hosted at <https://github.com/D0nG4667/gpmorgan-forge-de-portfolio> with feature-branch Conventional Commits merged into `main`.
 
 ---
 

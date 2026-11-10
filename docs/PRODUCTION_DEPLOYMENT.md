@@ -60,9 +60,8 @@ flowchart TB
     PG_PRI -->|"Debezium CDC"| KAFKA_CL
     KAFKA_CL -->|"Sub-Second Velocity Check"| FLINK_CL
     FLINK_CL -->|"Suspect Hop Trigger"| NEO_CL
-    KAFKA_CL --> SPARK_CL
-    KAFKA_CL --> S3_LAKE
-    SPARK_CL --> S3_LAKE
+    KAFKA_CL -->|"Micro-Batch Stream"| SPARK_CL
+    SPARK_CL -->|"Bronze Append / DLQ & Silver MERGE"| S3_LAKE
     S3_LAKE --> DWH
 ```
 
@@ -73,11 +72,11 @@ flowchart TB
 Before promoting a release to production, verify the following mandatory controls:
 
 1. **Secrets & Key Management Service (KMS)**:
-   - Inject all database credentials (`POSTGRES_PASSWORD`, `MONGO_PASSWORD`, `NEO4J_AUTH`, `REDIS_PASSWORD`) via external secret managers (AWS Secrets Manager, HashiCorp Vault, or Kubernetes ExternalSecrets).
-   - Provision the customer master key (`kms-ng-cbn-key-2026-01`) in Hardware Security Modules (HSM / Cloud KMS) for MongoDB 8.0 LTS Client-Side Field-Level Encryption (`AEAD_AES_256_GCM`).
+   - Inject all database and catalog credentials (`POSTGRES_PASSWORD`, `POSTGRES_REPLICA_PASSWORD`, `REPLICATION_PASSWORD`, `MONGO_PASSWORD`, `NEO4J_AUTH`, `TIMESCALE_PASSWORD`, `POLARIS_OAUTH_CREDENTIAL`, plus Redis ACL credentials in production) via external secret managers (AWS Secrets Manager, HashiCorp Vault, or Kubernetes ExternalSecrets).
+   - Provision the customer master key (`KMS_MASTER_KEY_ID=kms-ng-cbn-key-2026-01`, `FORGE_KMS_MASTER_KEY`) and KYC ZKP attestation seed (`FORGE_ZKP_ISSUER_SEED`) in Hardware Security Modules (HSM / Cloud KMS) for `AEAD_AES_256_GCM` field-level encryption and `Ed25519` ZKP credential signing.
 2. **Encryption in Transit & At Rest**:
    - Enforce `TLS 1.3` (`sslmode=verify-full` for PostgreSQL 18, `tls=true` for MongoDB 8.0 LTS and Redis 8.0, `bolt+s://` for Neo4j 5.26 LTS).
-   - Enable `AES-256` volume encryption on all underlying block volumes (`postgres_primary_data`, `postgres_replica_data`, `mongodb_data`, `neo4j_data`, `redis_data`) and S3/HDFS buckets.
+   - Enable `AES-256` volume encryption on all nine persistent Compose/block volumes (`postgres_primary_data`, `postgres_replica_data`, `cockroachdb_data`, `mongodb_data`, `neo4j_data`, `redis_data`, `cassandra_data`, `timescaledb_data`, `kafka_data`) and S3/HDFS buckets.
 3. **PostgreSQL 18 Production Engine Tuning (`postgresql.conf`)**:
 
    ```ini
@@ -113,61 +112,86 @@ Execute database migrations in a controlled, transactional pipeline before rolli
 
 ```bash
 # 1. Core 3NF/BCNF schema, domains, constraints, and immutability triggers (Portfolio 1)
-psql "$POSTGRES_PRIMARY_DSN" -v ON_ERROR_STOP=1 -f portfolio-1-database-design/schema.sql
+psql "$POSTGRES_DSN" -v ON_ERROR_STOP=1 -f portfolio-1-database-design/schema.sql
 
 # 2. Covering, partial, GIN indexes, and concurrent materialised views (Portfolio 2)
-psql "$POSTGRES_PRIMARY_DSN" -v ON_ERROR_STOP=1 -f portfolio-2-query-optimisation/indexes_and_views.sql
+psql "$POSTGRES_DSN" -v ON_ERROR_STOP=1 -f portfolio-2-query-optimisation/indexes_and_views.sql
 
 # 3. Declarative quarterly range partitions and modulus-4 hash shards (Portfolio 5)
-psql "$POSTGRES_PRIMARY_DSN" -v ON_ERROR_STOP=1 -f portfolio-5-distributed-cloud/partitioning_and_sharding.sql
+psql "$POSTGRES_DSN" -v ON_ERROR_STOP=1 -f portfolio-5-distributed-cloud/partitioning_and_sharding.sql
 
 # 4. Least-privilege RBAC roles, RLS policies, masked views, and NDPA erasure functions (Portfolio 5)
-psql "$POSTGRES_PRIMARY_DSN" -v ON_ERROR_STOP=1 -f portfolio-5-distributed-cloud/security_rbac_rls_privacy.sql
+psql "$POSTGRES_DSN" -v ON_ERROR_STOP=1 -f portfolio-5-distributed-cloud/security_rbac_rls_privacy.sql
 ```
 
-### Step 2: MongoDB 8.0 LTS Document Validators & TTL Indexes
+### Step 2: CockroachDB Multi-Region & TimescaleDB Hypertable Initialization
 
 ```bash
-mongosh "$MONGO_PRODUCTION_URI" --file portfolio-4-nosql/mongodb_document_model.js
+# CockroachDB active-active corridor settlement DDL
+cockroach sql --url "$COCKROACH_DSN" -f portfolio-5-distributed-cloud/infra/cockroach/init-multi-region.sql
+
+# TimescaleDB FX liquidity hypertable and continuous aggregate DDL
+psql "$TIMESCALE_DSN" -v ON_ERROR_STOP=1 -f portfolio-5-distributed-cloud/infra/timescaledb/init-hypertable.sql
 ```
 
-### Step 3: Neo4j 5.26 LTS Uniqueness Constraints & Property Indexes
+### Step 3: MongoDB 8.0 LTS Document Validators & TTL Indexes
 
 ```bash
-cypher-shell -a "$NEO4J_PRODUCTION_URI" -u "$NEO4J_USER" -p "$NEO4J_PASSWORD" \
+mongosh "$MONGO_URI" --file portfolio-4-nosql/mongodb_document_model.js
+```
+
+### Step 4: Neo4j 5.26 LTS Uniqueness Constraints & Property Indexes
+
+```bash
+cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" -p "$NEO4J_PASSWORD" \
   -f portfolio-4-nosql/neo4j_fraud_graph.cypher
 ```
 
-### Step 4: Apache Cassandra 5.0 Timeline Keyspace & Table Initialization
+### Step 5: Apache Cassandra 5.0 Timeline Keyspace & Table Initialization
 
 ```bash
-cqlsh "$CASSANDRA_PRODUCTION_HOST" 9042 -u "$CASSANDRA_USER" -p "$CASSANDRA_PASSWORD" \
+cqlsh "$CASSANDRA_HOST" "${CASSANDRA_CQL_PORT:-9042}" \
   -f portfolio-4-nosql/cassandra_timeline_projection.cql
+```
+
+### Step 6: Trino Iceberg Schemas & Debezium Logical-Decoding CDC Connector
+
+```bash
+# Initialize Bronze, DLQ, Silver, and Gold Iceberg namespaces/tables via Trino + Polaris
+trino --server "$TRINO_COORDINATOR_URI" -f portfolio-5-distributed-cloud/lakehouse/trino/init_iceberg_tables.sql
+
+# Register the PostgreSQL pgoutput CDC connector with Debezium Kafka Connect
+curl -fsS -X PUT -H "Content-Type: application/json" \
+  "http://localhost:${DEBEZIUM_PORT:-8083}/connectors/forge-postgres-ledger-cdc/config" \
+  --data "$(jq .config portfolio-5-distributed-cloud/lakehouse/debezium/postgres-ledger-connector.json)"
 ```
 
 ---
 
 ## 4. Container Image Build & Production Rollout
 
-The multi-stage [`Dockerfile`](../Dockerfile) compiles dependencies in an isolated builder stage and produces a minimal Python 3.15 runtime image running as unprivileged user `forge` (`UID 10001`):
+The multi-stage [`Dockerfile`](../Dockerfile) compiles dependencies in an isolated builder stage and produces a minimal Python 3.15 runtime image running as unprivileged user `forge` (`UID 10001`). In [`compose.yaml`](../compose.yaml), `forge-app` runs as a one-shot verification container (whereas in Kubernetes/cloud production, the same hardened image runs stateless API worker replicas behind PgBouncer):
 
 ```bash
-# 1. Build and tag the hardened production runtime image
+# 1. Provision TLS 1.3 certificates (local Compose dev/staging; use Vault/ACM PKI in production)
+uv run python scripts/generate_dev_tls.py
+
+# 2. Build and tag the hardened production runtime image
 docker build --target runtime -t registry.gpmorganforge.internal/forge-app:1.0.0 .
 
-# 2. Validate the Compose production topology
+# 3. Validate the Compose production topology
 docker compose -f compose.yaml --profile full config -q
 
-# 3. Start the production polyglot stack with healthcheck dependencies
-docker compose -f compose.yaml --profile full up -d --wait
+# 4. Start the polyglot database and Lakehouse services
+docker compose -f compose.yaml --profile core --profile nosql --profile distributed --profile lakehouse up -d
 ```
 
 ### Post-Deployment Smoke & Ledger Invariant Verification
 
-Immediately after container startup, run the automated verification probe:
+Immediately after service startup, run a one-shot verification container probe:
 
 ```bash
-docker compose -f compose.yaml exec forge-app \
+docker compose -f compose.yaml --profile test run --rm forge-app \
   python -m gpmorgan_forge.evidence_generator --verify
 ```
 

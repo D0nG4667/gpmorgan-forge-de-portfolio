@@ -15,15 +15,19 @@ Ensure the following tools are installed on your workstation:
 | **Docker & Compose** | Docker `29+` / Compose `v2.35+` | Multi-container orchestration via modern `compose.yaml` | `docker compose version` |
 | **Git** | `2.47+` | Version control & branch management | `git --version` |
 | **Rumdl** | `0.3+` (installed via `uv`) | Fast Rust-powered Markdown linter (`[tool.rumdl]` in `pyproject.toml`) | `uv run rumdl --version` |
-| **Lefthook** | `1.11+` (optional local binary) | Fast Git hook runner (`pre-commit`, `commit-msg`, `pre-push`) | `lefthook version` |
+| **Lefthook** | `1.7+` (optional local binary) | Fast Git hook runner (`pre-commit`, `commit-msg`, `pre-push`; `min_version: 1.7.0`) | `lefthook version` |
 
 ---
 
 ## 2. Quickstart Setup (Under 2 Minutes)
 
-### Step 1: Synchronize the Python Environment
+### Step 1: Clone & Synchronize the Python Environment
 
 ```bash
+# Clone the repository and enter the workspace
+git clone https://github.com/D0nG4667/gpmorgan-forge-de-portfolio.git
+cd gpmorgan-forge-de-portfolio
+
 # Create the Python 3.15 virtual environment and install all runtime and dev dependencies
 uv sync --all-extras --dev
 ```
@@ -68,20 +72,22 @@ This repository follows the modern [Compose Specification](https://docs.docker.c
 ```mermaid
 flowchart LR
     DEV["Developer Workstation"]
-    APP["forge-app (Python 3.15 Verifier): Multi-Stage Dockerfile"]
-    PG1[("postgres-primary (PostgreSQL 18): Port 5432")]
+    APP["forge-app (Python 3.15 Verifier): Multi-Stage Dockerfile (Profile: test/full)"]
+    PG1[("postgres-primary (PostgreSQL 18): Port 5432 (Profile: core/full)")]
     PG2[("postgres-replica + cockroachdb: Ports 5433 / 26257 (Profile: distributed/full)")]
-    REDIS[("redis (Redis 8.0): Port 6379")]
-    MONGO[("mongodb + cassandra + timescaledb: Ports 27017 / 9042 / 5434 (Profile: nosql/full)")]
-    NEO[("neo4j (Neo4j 5.26 LTS): Ports 7474 / 7687 (Profile: nosql/full)")]
-    LAKE[["kafka + flink + polaris-catalog + trino + otel (Profile: lakehouse/full)"]]
+    REDIS[("redis (Redis 8.0): Port 6379 (Profile: core/nosql/full)")]
+    MONGO[("mongodb + cassandra: Ports 27017 / 9042 (Profile: nosql/full)")]
+    TSDB[("timescaledb: Port 5434 (Profile: nosql/distributed/full)")]
+    NEO[("neo4j (Neo4j 5.26 LTS): Ports 7474 / 7687 (Profile: nosql/graph/full)")]
+    LAKE[["kafka + debezium-connect + flink + spark-streaming + polaris-catalog + trino + airflow + otel-collector (Profile: lakehouse/full)"]]
 
     DEV -->|"docker compose --profile full up"| APP
     APP --> PG1
     PG1 -->|"Replication & Multi-Region"| PG2
     APP --> REDIS
     APP -.->|"--profile nosql / full"| MONGO
-    APP -.->|"--profile nosql / full"| NEO
+    APP -.->|"--profile nosql / distributed / full"| TSDB
+    APP -.->|"--profile nosql / graph / full"| NEO
     APP -.->|"--profile lakehouse / full"| LAKE
 ```
 
@@ -101,7 +107,7 @@ docker compose -f compose.yaml --profile full config -q
 ### Start the Core Relational & Cache Stack
 
 ```bash
-# Starts PostgreSQL 18 Primary (auto-initializing Portfolio 1, 2, 3, and 5 SQL scripts) and Redis 8.0
+# Starts PostgreSQL 18 Primary (auto-initializing Portfolio 1, 2, and 5 SQL scripts) and Redis 8.0
 docker compose --profile core up -d
 ```
 
@@ -146,8 +152,8 @@ docker compose --profile full down -v
 | [`src/gpmorgan_forge/concurrency.py`](../src/gpmorgan_forge/concurrency.py) | Canonical ascending-UUID lock ordering (`compute_canonical_lock_schedule`), Optimistic Concurrency Control (`simulate_optimistic_concurrency_conflict`), and `SAVEPOINT` batch settlement (`execute_batch_transfers_with_savepoints`) | Portfolio 3 |
 | [`src/gpmorgan_forge/nosql_models.py`](../src/gpmorgan_forge/nosql_models.py) | MongoDB 8.0 LTS `$jsonSchema` & AEAD encryption (`DocumentStoreEngine`), Redis 8.0 / Valkey Two-Tier idempotency, caching & ZSET rate limiting (`KeyValueStoreEngine`), Neo4j 5.26 LTS fraud & recommendation graph (`GraphFraudEngine`), Apache Cassandra 5.0 read-only CDC timeline (`WideColumnTimelineEngine`), and TimescaleDB FX hypertables (`TimeSeriesTelemetryEngine`) | Portfolio 4 |
 | [`src/gpmorgan_forge/distributed_privacy.py`](../src/gpmorgan_forge/distributed_privacy.py) | Range/hash partition, lag-aware replica & CockroachDB multi-region router (`DistributedClusterRouter`), Apache Flink stateful velocity filter (`FlinkStatefulVelocityEngine`), Kafka 4.0 + Spark 4.0 + Apache Iceberg (Apache Polaris) + Trino + Airflow/dbt + OpenLineage Lakehouse (`MedallionLakehousePipeline`), OpenTelemetry tracer (`DatabaseTelemetryTracer`), RBAC/ABAC/RLS (`AccessControlEngine`), and masking/NDPA erasure/DP/ZKP (`DataPrivacyEngine`) | Portfolio 5 |
-| [`src/gpmorgan_forge/identity.py`](../src/gpmorgan_forge/identity.py) | RFC 6238 TOTP (HMAC-SHA1, 6-digit, 30s time-step, replay cache) and OIDC JWT (`RS256` / `EdDSA`) signature, issuer, audience, expiry, and `mfa` claim verifier (`IdentityVerificationEngine`) | Portfolio 5 |
-| [`src/gpmorgan_forge/zkp.py`](../src/gpmorgan_forge/zkp.py) | Non-interactive Zero-Knowledge Range Proof (`secp256k1` Pedersen commitments, Cramer-Damgard-Schoenmakers bit-decomposition OR-proofs, and `Ed25519` KYC authority attestation) for `kyc_tier >= TIER_2` and `age >= 18` (`ZKPRangeProofEngine`) | Portfolio 5 |
+| [`src/gpmorgan_forge/identity.py`](../src/gpmorgan_forge/identity.py) | RFC 6238 TOTP (HMAC-SHA1, 6-digit, 30s time-step, replay cache) and OIDC JWT (`RS256` / `EdDSA`) signature, issuer, audience, expiry, and `amr` (`"mfa"` / `"otp"`) step-up MFA verifier (`TotpVerifier`, `OidcTokenValidator`, `SsoSession`, `authorize`) | Portfolio 5 |
+| [`src/gpmorgan_forge/zkp.py`](../src/gpmorgan_forge/zkp.py) | Non-interactive Zero-Knowledge Range Proof (`secp256k1` Pedersen commitments, Cramer-Damgård-Schoenmakers bit-decomposition OR-proofs, and `Ed25519` KYC authority attestation) for `kyc_tier >= TIER_2` and `age >= 18` (`KycCredentialIssuer`, `prove_eligibility`, `verify_eligibility`) | Portfolio 5 |
 | [`src/gpmorgan_forge/evidence_generator.py`](../src/gpmorgan_forge/evidence_generator.py) | Automated end-to-end verification CLI across all 5 portfolios | All Portfolios |
 
 ---

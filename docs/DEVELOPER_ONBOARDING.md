@@ -1,4 +1,4 @@
-# Developer Onboarding Guide — GPMorgan Forge
+# Developer Onboarding Guide: GPMorgan Forge
 
 Welcome to the **GPMorgan Forge** core banking and financial technology data platform repository. This guide walks you through setting up your local environment, starting the containerized polyglot persistence stack, running the 100%-coverage verification suite, and regenerating empirical execution evidence.
 
@@ -68,13 +68,13 @@ This repository follows the modern [Compose Specification](https://docs.docker.c
 ```mermaid
 flowchart LR
     DEV["Developer Workstation"]
-    APP["forge-app (Python 3.15 Verifier) — Multi-Stage Dockerfile"]
-    PG1[("postgres-primary (PostgreSQL 18) — Port 5432")]
-    PG2[("postgres-replica + cockroachdb — Ports 5433 / 26257 (Profile: distributed/full)")]
-    REDIS[("redis (Redis 8.0) — Port 6379")]
-    MONGO[("mongodb + cassandra + timescaledb — Ports 27017 / 9042 / 5434 (Profile: nosql/full)")]
-    NEO[("neo4j (Neo4j 5.26 LTS) — Ports 7474 / 7687 (Profile: nosql/full)")]
-    LAKE[["kafka + flink + polaris-catalog + trino + otel — (Profile: lakehouse/full)"]]
+    APP["forge-app (Python 3.15 Verifier): Multi-Stage Dockerfile"]
+    PG1[("postgres-primary (PostgreSQL 18): Port 5432")]
+    PG2[("postgres-replica + cockroachdb: Ports 5433 / 26257 (Profile: distributed/full)")]
+    REDIS[("redis (Redis 8.0): Port 6379")]
+    MONGO[("mongodb + cassandra + timescaledb: Ports 27017 / 9042 / 5434 (Profile: nosql/full)")]
+    NEO[("neo4j (Neo4j 5.26 LTS): Ports 7474 / 7687 (Profile: nosql/full)")]
+    LAKE[["kafka + flink + polaris-catalog + trino + otel (Profile: lakehouse/full)"]]
 
     DEV -->|"docker compose --profile full up"| APP
     APP --> PG1
@@ -90,6 +90,9 @@ flowchart LR
 ```bash
 # Copy tracked environment template to local git-ignored .env
 cp .env.example .env
+
+# Generate local ECDSA P-256 CA and server SAN certificates for PostgreSQL 18 TLS 1.3 enforcement
+uv run python scripts/generate_dev_tls.py
 
 # Validate Compose configuration
 docker compose -f compose.yaml --profile full config -q
@@ -109,13 +112,19 @@ When the `postgres-primary` container starts for the first time, it automaticall
 3. [`portfolio-2-query-optimisation/indexes_and_views.sql`](../portfolio-2-query-optimisation/indexes_and_views.sql)
 4. [`portfolio-5-distributed-cloud/partitioning_and_sharding.sql`](../portfolio-5-distributed-cloud/partitioning_and_sharding.sql)
 5. [`portfolio-5-distributed-cloud/security_rbac_rls_privacy.sql`](../portfolio-5-distributed-cloud/security_rbac_rls_privacy.sql)
+6. [`portfolio-5-distributed-cloud/infra/postgres/primary-init-replication.sh`](../portfolio-5-distributed-cloud/infra/postgres/primary-init-replication.sh)
 
 ### Start the Full Polyglot, Distributed SQL, Streaming & Lakehouse Stack
 
 ```bash
-# Starts all 14 services: PostgreSQL 18 (Primary & Replica), CockroachDB, MongoDB 8.0 LTS,
+# Pull the ~4 GB Lakehouse images one at a time (--parallel 1 prevents Docker Hub's
+# 300-second OAuth2 pull token from expiring while multi-GB JVM images wait in queue)
+docker compose --parallel 1 --profile full pull
+
+# Starts all 17 services: PostgreSQL 18 (Primary & Replica), CockroachDB, MongoDB 8.0 LTS,
 # Neo4j 5.26 LTS, Redis 8.0, Apache Cassandra 5.0, TimescaleDB, Apache Kafka 4.0 (KRaft),
-# Apache Flink, Apache Polaris REST Catalog, Trino, OpenTelemetry Collector & App Verifier
+# Debezium Connect, Apache Flink, Spark 4.0 Streaming, Apache Polaris REST Catalog, Trino,
+# Airflow (dbt), OpenTelemetry Collector & App Verifier
 docker compose --profile full up -d
 ```
 
@@ -137,6 +146,8 @@ docker compose --profile full down -v
 | [`src/gpmorgan_forge/concurrency.py`](../src/gpmorgan_forge/concurrency.py) | Canonical ascending-UUID lock ordering (`compute_canonical_lock_schedule`), Optimistic Concurrency Control (`simulate_optimistic_concurrency_conflict`), and `SAVEPOINT` batch settlement (`execute_batch_transfers_with_savepoints`) | Portfolio 3 |
 | [`src/gpmorgan_forge/nosql_models.py`](../src/gpmorgan_forge/nosql_models.py) | MongoDB 8.0 LTS `$jsonSchema` & AEAD encryption (`DocumentStoreEngine`), Redis 8.0 / Valkey Two-Tier idempotency, caching & ZSET rate limiting (`KeyValueStoreEngine`), Neo4j 5.26 LTS fraud & recommendation graph (`GraphFraudEngine`), Apache Cassandra 5.0 read-only CDC timeline (`WideColumnTimelineEngine`), and TimescaleDB FX hypertables (`TimeSeriesTelemetryEngine`) | Portfolio 4 |
 | [`src/gpmorgan_forge/distributed_privacy.py`](../src/gpmorgan_forge/distributed_privacy.py) | Range/hash partition, lag-aware replica & CockroachDB multi-region router (`DistributedClusterRouter`), Apache Flink stateful velocity filter (`FlinkStatefulVelocityEngine`), Kafka 4.0 + Spark 4.0 + Apache Iceberg (Apache Polaris) + Trino + Airflow/dbt + OpenLineage Lakehouse (`MedallionLakehousePipeline`), OpenTelemetry tracer (`DatabaseTelemetryTracer`), RBAC/ABAC/RLS (`AccessControlEngine`), and masking/NDPA erasure/DP/ZKP (`DataPrivacyEngine`) | Portfolio 5 |
+| [`src/gpmorgan_forge/identity.py`](../src/gpmorgan_forge/identity.py) | RFC 6238 TOTP (HMAC-SHA1, 6-digit, 30s time-step, replay cache) and OIDC JWT (`RS256` / `EdDSA`) signature, issuer, audience, expiry, and `mfa` claim verifier (`IdentityVerificationEngine`) | Portfolio 5 |
+| [`src/gpmorgan_forge/zkp.py`](../src/gpmorgan_forge/zkp.py) | Non-interactive Zero-Knowledge Range Proof (`secp256k1` Pedersen commitments, Cramer-Damgard-Schoenmakers bit-decomposition OR-proofs, and `Ed25519` KYC authority attestation) for `kyc_tier >= TIER_2` and `age >= 18` (`ZKPRangeProofEngine`) | Portfolio 5 |
 | [`src/gpmorgan_forge/evidence_generator.py`](../src/gpmorgan_forge/evidence_generator.py) | Automated end-to-end verification CLI across all 5 portfolios | All Portfolios |
 
 ---
@@ -146,6 +157,6 @@ docker compose --profile full down -v
 | Test Tier / Path | Pytest Marker | Verification Scope |
 | :--- | :--- | :--- |
 | [`tests/conftest.py`](../tests/conftest.py) | Fixture Layer | Shared in-memory relational `db_session` and pre-populated multi-account `seeded_session` fixtures |
-| [`tests/unit/`](../tests/unit/__init__.py) | `@pytest.mark.unit` | Isolated unit tests for SHA-256 hash chaining ([`test_domain_models_and_crypto.py`](../tests/unit/test_domain_models_and_crypto.py)) and NoSQL/RBAC/privacy primitives ([`test_nosql_and_privacy_primitives.py`](../tests/unit/test_nosql_and_privacy_primitives.py)) |
-| [`tests/integration/`](../tests/integration/__init__.py) | `@pytest.mark.integration` | Stateful multi-component tests for core banking & double-entry ledger ([`test_core_banking_and_ledger_ops.py`](../tests/integration/test_core_banking_and_ledger_ops.py)), query plans & concurrency ([`test_query_optimizer_and_concurrency.py`](../tests/integration/test_query_optimizer_and_concurrency.py)), and Neo4j AML graphs & Lakehouse ([`test_polyglot_graph_and_lakehouse.py`](../tests/integration/test_polyglot_graph_and_lakehouse.py)) |
+| [`tests/unit/`](../tests/unit/__init__.py) | `@pytest.mark.unit` | Isolated unit tests for SHA-256 hash chaining ([`test_domain_models_and_crypto.py`](../tests/unit/test_domain_models_and_crypto.py)), NoSQL/RBAC/privacy primitives ([`test_nosql_and_privacy_primitives.py`](../tests/unit/test_nosql_and_privacy_primitives.py)), RFC 6238 TOTP & OIDC JWT verification ([`test_identity.py`](../tests/unit/test_identity.py)), and `secp256k1` Pedersen/CDS94 ZKP range proofs ([`test_zkp.py`](../tests/unit/test_zkp.py)) |
+| [`tests/integration/`](../tests/integration/__init__.py) | `@pytest.mark.integration` | Stateful multi-component tests for core banking & double-entry ledger ([`test_core_banking_and_ledger_ops.py`](../tests/integration/test_core_banking_and_ledger_ops.py)), query plans & concurrency ([`test_query_optimizer_and_concurrency.py`](../tests/integration/test_query_optimizer_and_concurrency.py)), Neo4j AML graphs & Lakehouse ([`test_polyglot_graph_and_lakehouse.py`](../tests/integration/test_polyglot_graph_and_lakehouse.py)), and deployable Lakehouse configs ([`test_lakehouse_artifacts.py`](../tests/integration/test_lakehouse_artifacts.py)) |
 | [`tests/e2e/`](../tests/e2e/__init__.py) | `@pytest.mark.e2e` | End-to-end verification of `evidence_generator --verify`, SQL/NoSQL/Cypher/Redis DDL & DML, `compose.yaml`, `Dockerfile`, and repository Markdown links ([`test_portfolio_evidence_and_artifacts.py`](../tests/e2e/test_portfolio_evidence_and_artifacts.py)) |

@@ -208,5 +208,6 @@ def test_lakehouse_openlineage_event_follows_run_event_spec_and_is_deterministic
     assert event["eventTime"] == when.isoformat()
     assert event["schemaURL"].endswith("#/$defs/RunEvent")
     assert event["producer"].startswith("https://")
+    assert "gpmorgan-forge-de-portfolio" in event["producer"]
     assert {"namespace", "name"} <= set(event["inputs"][0])
     assert {"namespace", "name"} <= set(event["outputs"][0])

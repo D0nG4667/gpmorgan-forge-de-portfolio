@@ -37,6 +37,9 @@ dev = [
     "rumdl>=0.3.2",
 ]
 
+[project.urls]
+Repository = "https://github.com/D0nG4667/gpmorgan-forge-de-portfolio"
+
 [project.scripts]
 forge-evidence = "gpmorgan_forge.evidence_generator:main"
 

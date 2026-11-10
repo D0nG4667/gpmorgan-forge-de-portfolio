@@ -32,7 +32,7 @@ from gpmorgan_forge.zkp import KycCredentialIssuer, prove_eligibility, verify_el
 
 LAKEHOUSE_REQUIRED_EVENT_FIELDS: Final[tuple[str, ...]] = ("reference_code", "currency", "amount")
 OPENLINEAGE_PRODUCER: Final[str] = (
-    "https://github.com/D0nG4667/GPMorgan-Forge-Portfolio/tree/main/"
+    "https://github.com/D0nG4667/gpmorgan-forge-de-portfolio/tree/main/"
     "portfolio-5-distributed-cloud/lakehouse"
 )
 OPENLINEAGE_RUN_EVENT_SCHEMA_URL: Final[str] = (

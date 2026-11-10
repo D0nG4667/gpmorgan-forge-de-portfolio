@@ -1,0 +1,604 @@
+# =============================================================================
+# GPMorgan Forge: Polyglot Database, Streaming & Lakehouse Platform Stack
+# Specification: Modern Compose Specification (compose.yaml)
+# Profiles:
+#   - core:        postgres-primary + redis (lightweight OLTP & idempotency)
+#   - nosql:       mongodb + neo4j + redis + cassandra + timescaledb
+#   - distributed: postgres-replica + cockroachdb + timescaledb
+#   - lakehouse:   kafka + debezium-connect + flink + spark-streaming + polaris-catalog +
+#                  trino + airflow (dbt) + otel-collector
+#   - test:        forge-app (automated test pyramid & evidence verifier)
+#   - full:        complete polyglot, distributed SQL, streaming & lakehouse mesh
+# =============================================================================
+
+name: gpmorgan-forge
+
+services:
+  # ---------------------------------------------------------------------------
+  # Portfolio 1, 2, 3, 5: PostgreSQL 18 Primary Node (OLTP Core & Shards)
+  # ---------------------------------------------------------------------------
+  postgres-primary:
+    image: postgres:18-alpine
+    container_name: forge-postgres-primary
+    init: true
+    restart: unless-stopped
+    # Logical WAL enables Debezium CDC (pgoutput) alongside streaming replication.
+    # TLS 1.3 is mandatory for every remote connection (certs: scripts/generate_dev_tls.py).
+    entrypoint: ["/bin/bash", "/opt/forge/tls-entrypoint.sh", "docker-entrypoint.sh"]
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_wal_senders=10
+      - -c
+      - max_replication_slots=10
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/var/lib/postgresql-tls/server.crt
+      - -c
+      - ssl_key_file=/var/lib/postgresql-tls/server.key
+      - -c
+      - ssl_ca_file=/var/lib/postgresql-tls/ca.crt
+      - -c
+      - ssl_min_protocol_version=TLSv1.3
+    profiles:
+      - core
+      - full
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-gpmorgan_forge}
+      POSTGRES_USER: ${POSTGRES_USER:-forge_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-forge_secure_pass_2026}
+      PGDATA: /var/lib/postgresql/data/pgdata
+      REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:-forge_repl_pass_2026}
+      POSTGRES_REPLICA_PASSWORD: ${POSTGRES_REPLICA_PASSWORD:-forge_replica_pass_2026}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_primary_data:/var/lib/postgresql/data
+      - ./portfolio-1-database-design/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./portfolio-1-database-design/seed_data.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+      - ./portfolio-2-query-optimisation/indexes_and_views.sql:/docker-entrypoint-initdb.d/03-indexes-views.sql:ro
+      - ./portfolio-5-distributed-cloud/partitioning_and_sharding.sql:/docker-entrypoint-initdb.d/04-partitioning.sql:ro
+      - ./portfolio-5-distributed-cloud/security_rbac_rls_privacy.sql:/docker-entrypoint-initdb.d/05-security-privacy.sql:ro
+      - ./portfolio-5-distributed-cloud/infra/postgres/primary-init-replication.sh:/docker-entrypoint-initdb.d/06-replication.sh:ro
+      - ./portfolio-5-distributed-cloud/infra/postgres/tls-entrypoint.sh:/opt/forge/tls-entrypoint.sh:ro
+      - ./portfolio-5-distributed-cloud/infra/tls:/run/forge-tls:ro
+    networks:
+      - forge-data-mesh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-forge_admin} -d $${POSTGRES_DB:-gpmorgan_forge}"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # Portfolio 5: PostgreSQL 18 Hot-Standby Streaming Replica (pg_basebackup + WAL streaming)
+  # ---------------------------------------------------------------------------
+  postgres-replica:
+    image: postgres:18-alpine
+    container_name: forge-postgres-replica
+    init: true
+    restart: unless-stopped
+    entrypoint: ["/bin/bash", "/opt/forge/replica-entrypoint.sh"]
+    profiles:
+      - distributed
+      - full
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-forge_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-forge_secure_pass_2026}
+      PGDATA: /var/lib/postgresql/data/pgdata
+      REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:-forge_repl_pass_2026}
+      PRIMARY_HOST: postgres-primary
+    ports:
+      - "${POSTGRES_REPLICA_PORT:-5433}:5432"
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+    volumes:
+      - postgres_replica_data:/var/lib/postgresql/data
+      - ./portfolio-5-distributed-cloud/infra/postgres/replica-entrypoint.sh:/opt/forge/replica-entrypoint.sh:ro
+      - ./portfolio-5-distributed-cloud/infra/postgres/tls-entrypoint.sh:/opt/forge/tls-entrypoint.sh:ro
+      - ./portfolio-5-distributed-cloud/infra/tls:/run/forge-tls:ro
+    networks:
+      - forge-data-mesh
+    healthcheck:
+      test: ["CMD-SHELL", "psql -U $${POSTGRES_USER:-forge_admin} -d $${POSTGRES_DB:-gpmorgan_forge} -tAc 'select pg_is_in_recovery()' | grep -q t"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+
+  # ---------------------------------------------------------------------------
+  # Portfolio 5: CockroachDB Multi-Region Active-Active SQL (Raft SERIALIZABLE)
+  # ---------------------------------------------------------------------------
+  cockroachdb:
+    image: cockroachdb/cockroach:v24.3.0
+    container_name: forge-cockroachdb
+    init: true
+    restart: unless-stopped
+    entrypoint: ["/bin/bash", "/opt/forge/cockroach-entrypoint.sh"]
+    profiles:
+      - distributed
+      - full
+    command: ["start-single-node", "--insecure", "--store=/cockroach/cockroach-data"]
+    ports:
+      - "${COCKROACH_SQL_PORT:-26257}:26257"
+      - "${COCKROACH_HTTP_PORT:-8080}:8080"
+    volumes:
+      - cockroachdb_data:/cockroach/cockroach-data
+      - ./portfolio-5-distributed-cloud/infra/cockroach/cockroach-entrypoint.sh:/opt/forge/cockroach-entrypoint.sh:ro
+      - ./portfolio-5-distributed-cloud/infra/cockroach/init-multi-region.sql:/opt/forge/init-multi-region.sql:ro
+    networks:
+      - forge-data-mesh
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health?ready=1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Portfolio 4: MongoDB 8.0 LTS Document Store ($jsonSchema KYC & Telemetry)
+  # ---------------------------------------------------------------------------
+  mongodb:
+    image: mongo:8.0
+    container_name: forge-mongodb
+    init: true
+    restart: unless-stopped
+    profiles:
+      - nosql
+      - full
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-forge_mongo_admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-forge_mongo_pass_2026}
+      MONGO_INITDB_DATABASE: ${MONGO_DB:-gpmorgan_forge_docs}
+    ports:
+      - "${MONGO_PORT:-27017}:27017"
+    volumes:
+      - mongodb_data:/data/db
+      - ./portfolio-4-nosql/mongodb_document_model.js:/docker-entrypoint-initdb.d/01-init-collections.js:ro
+    networks:
+      - forge-data-mesh
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Portfolio 4: Neo4j 5.26 LTS Graph Database (AML Fraud Ring Detection)
+  # ---------------------------------------------------------------------------
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: forge-neo4j
+    init: true
+    restart: unless-stopped
+    entrypoint: ["/bin/bash", "/opt/forge/neo4j-entrypoint.sh"]
+    profiles:
+      - nosql
+      - graph
+      - full
+    environment:
+      NEO4J_AUTH: ${NEO4J_AUTH:-neo4j/forge_graph_pass_2026}
+      NEO4J_server_memory_pagecache_size: 256M
+      NEO4J_server_memory_heap_initial__size: 256M
+      NEO4J_server_memory_heap_max__size: 512M
+    ports:
+      - "${NEO4J_HTTP_PORT:-7474}:7474"
+      - "${NEO4J_BOLT_PORT:-7687}:7687"
+    volumes:
+      - neo4j_data:/data
+      - ./portfolio-4-nosql/neo4j_fraud_graph.cypher:/opt/forge/neo4j_fraud_graph.cypher:ro
+      - ./portfolio-5-distributed-cloud/infra/neo4j/neo4j-entrypoint.sh:/opt/forge/neo4j-entrypoint.sh:ro
+    networks:
+      - forge-data-mesh
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # ---------------------------------------------------------------------------
+  # Portfolio 4 & 5: Redis 8.0 Key-Value Store (Two-Tier Idempotency & Cache)
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:8.0-alpine
+    container_name: forge-redis
+    init: true
+    restart: unless-stopped
+    profiles:
+      - core
+      - nosql
+      - full
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - forge-data-mesh
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
+
+  # ---------------------------------------------------------------------------
+  # Portfolio 4: Apache Cassandra 5.0 (Read-Only CDC Timeline Projections)
+  # ---------------------------------------------------------------------------
+  cassandra:
+    image: cassandra:5.0
+    container_name: forge-cassandra
+    init: true
+    restart: unless-stopped
+    entrypoint: ["/bin/bash", "/opt/forge/cassandra-entrypoint.sh"]
+    profiles:
+      - nosql
+      - full
+    environment:
+      CASSANDRA_CLUSTER_NAME: ${CASSANDRA_CLUSTER_NAME:-gpmorgan_forge_ring}
+      CASSANDRA_DC: ${CASSANDRA_DC:-dc_lagos_ng}
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+      MAX_HEAP_SIZE: 512M
+      HEAP_NEWSIZE: 128M
+    ports:
+      - "${CASSANDRA_CQL_PORT:-9042}:9042"
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+      - ./portfolio-4-nosql/cassandra_timeline_projection.cql:/docker-entrypoint-initdb.d/01-timeline.cql:ro
+      - ./portfolio-5-distributed-cloud/infra/cassandra/cassandra-entrypoint.sh:/opt/forge/cassandra-entrypoint.sh:ro
+    networks:
+      - forge-data-mesh
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE TABLE forge_timeline.customer_transaction_timeline' >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 15
+      start_period: 45s
+
+  # ---------------------------------------------------------------------------
+  # Portfolio 4 & 5: TimescaleDB Hypertables (High-Frequency FX Tick Telemetry)
+  # ---------------------------------------------------------------------------
+  timescaledb:
+    image: timescale/timescaledb:latest-pg17
+    container_name: forge-timescaledb
+    init: true
+    restart: unless-stopped
+    profiles:
+      - nosql
+      - distributed
+      - full
+    environment:
+      POSTGRES_DB: ${TIMESCALE_DB:-gpmorgan_forge_tsdb}
+      POSTGRES_USER: ${TIMESCALE_USER:-forge_ts_admin}
+      POSTGRES_PASSWORD: ${TIMESCALE_PASSWORD:-forge_ts_pass_2026}
+    ports:
+      - "${TIMESCALE_PORT:-5434}:5432"
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+      - ./portfolio-5-distributed-cloud/partitioning_and_sharding.sql:/docker-entrypoint-initdb.d/01-fx-hypertable.sql:ro
+      - ./portfolio-5-distributed-cloud/infra/timescaledb/init-hypertable.sql:/docker-entrypoint-initdb.d/02-timescale-hypertable.sql:ro
+    networks:
+      - forge-data-mesh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-forge_ts_admin} -d $${POSTGRES_DB:-gpmorgan_forge_tsdb}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # ---------------------------------------------------------------------------
+  # Portfolio 5: Apache Kafka 4.0 (KRaft ZooKeeper-less CDC Event Bus)
+  # ---------------------------------------------------------------------------
+  kafka:
+    image: apache/kafka:4.0.0
+    container_name: forge-kafka
+    init: true
+    restart: unless-stopped
+    profiles:
+      - lakehouse
+      - full
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+    ports:
+      - "${KAFKA_PORT:-9092}:9092"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - forge-data-mesh
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # ---------------------------------------------------------------------------
+  # Portfolio 5: Apache Flink (Sub-Second Stateful Velocity Stream Processor)
+  # ---------------------------------------------------------------------------
+  flink:
+    image: flink:1.20-java17
+    container_name: forge-flink-jobmanager
+    init: true
+    restart: unless-stopped
+    profiles:
+      - lakehouse
+      - full
+    command: ["jobmanager"]
+    environment:
+      FLINK_PROPERTIES: "jobmanager.rpc.address: flink"
+    ports:
+      - "${FLINK_UI_PORT:-8081}:8081"
+    networks:
+      - forge-data-mesh
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/overview || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Portfolio 5: Apache Polaris (Apache Iceberg REST Catalog & RBAC Vending)
+  # ---------------------------------------------------------------------------
+  polaris-catalog:
+    image: apache/polaris:latest
+    container_name: forge-polaris-catalog
+    init: true
+    restart: unless-stopped
+    profiles:
+      - lakehouse
+      - full
+    ports:
+      - "${POLARIS_PORT:-8181}:8181"
+    networks:
+      - forge-data-mesh
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8181/healthcheck || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Portfolio 5: Trino Federated SQL Engine (Iceberg + PG + Mongo + Cassandra)
+  # ---------------------------------------------------------------------------
+  trino:
+    image: trinodb/trino:473
+    container_name: forge-trino
+    init: true
+    restart: unless-stopped
+    profiles:
+      - lakehouse
+      - full
+    environment:
+      POLARIS_OAUTH_CREDENTIAL: ${POLARIS_OAUTH_CREDENTIAL:-root:s3cr3t}
+      AWS_REGION: ${AWS_REGION:-eu-west-1}
+      POSTGRES_DB: ${POSTGRES_DB:-gpmorgan_forge}
+      POSTGRES_USER: ${POSTGRES_USER:-forge_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-forge_secure_pass_2026}
+      MONGO_USER: ${MONGO_USER:-forge_mongo_admin}
+      MONGO_PASSWORD: ${MONGO_PASSWORD:-forge_mongo_pass_2026}
+    volumes:
+      - ./portfolio-5-distributed-cloud/lakehouse/trino/catalog:/etc/trino/catalog:ro
+    ports:
+      - "${TRINO_PORT:-8082}:8080"
+    networks:
+      - forge-data-mesh
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/v1/info || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # ---------------------------------------------------------------------------
+  # Portfolio 5: OpenTelemetry Collector (DatabaseTelemetryTracer OTLP Sink)
+  # ---------------------------------------------------------------------------
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.120.0
+    container_name: forge-otel-collector
+    init: true
+    restart: unless-stopped
+    profiles:
+      - lakehouse
+      - full
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./portfolio-5-distributed-cloud/lakehouse/otel/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "${OTEL_GRPC_PORT:-4317}:4317"
+      - "${OTEL_HTTP_PORT:-4318}:4318"
+    networks:
+      - forge-data-mesh
+
+  # ---------------------------------------------------------------------------
+  # Portfolio 5: Debezium Kafka Connect (PostgreSQL logical-decoding CDC -> Kafka)
+  # Register: curl -X PUT -H "Content-Type: application/json" \
+  #   http://localhost:8083/connectors/forge-postgres-ledger-cdc/config \
+  #   --data "$(jq .config portfolio-5-distributed-cloud/lakehouse/debezium/postgres-ledger-connector.json)"
+  # ---------------------------------------------------------------------------
+  debezium-connect:
+    image: quay.io/debezium/connect:3.0.0.Final
+    container_name: forge-debezium-connect
+    init: true
+    restart: unless-stopped
+    profiles:
+      - lakehouse
+      - full
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: forge-debezium
+      CONFIG_STORAGE_TOPIC: forge_connect_configs
+      OFFSET_STORAGE_TOPIC: forge_connect_offsets
+      STATUS_STORAGE_TOPIC: forge_connect_statuses
+      CONNECT_CONFIG_PROVIDERS: env
+      CONNECT_CONFIG_PROVIDERS_ENV_CLASS: org.apache.kafka.common.config.provider.EnvVarConfigProvider
+      POSTGRES_DB: ${POSTGRES_DB:-gpmorgan_forge}
+      POSTGRES_USER: ${POSTGRES_USER:-forge_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-forge_secure_pass_2026}
+    ports:
+      - "${DEBEZIUM_PORT:-8083}:8083"
+    depends_on:
+      kafka:
+        condition: service_healthy
+        required: false
+      postgres-primary:
+        condition: service_healthy
+        required: false
+    networks:
+      - forge-data-mesh
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8083/connectors || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # Portfolio 5: Spark 4.0 Structured Streaming (Kafka -> Bronze -> Silver Iceberg MERGE)
+  # ---------------------------------------------------------------------------
+  spark-streaming:
+    image: apache/spark:4.0.0-python3
+    container_name: forge-spark-streaming
+    init: true
+    restart: unless-stopped
+    profiles:
+      - lakehouse
+      - full
+    user: root
+    command:
+      - /opt/spark/bin/spark-submit
+      - --packages
+      - org.apache.spark:spark-sql-kafka-0-10_2.13:4.0.0,org.apache.iceberg:iceberg-spark-runtime-4.0_2.13:1.10.0
+      - /opt/forge/spark/bronze_to_silver.py
+    environment:
+      POLARIS_CATALOG_URI: ${POLARIS_CATALOG_URI:-http://polaris-catalog:8181/api/catalog}
+      POLARIS_OAUTH_CREDENTIAL: ${POLARIS_OAUTH_CREDENTIAL:-root:s3cr3t}
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+      CDC_TOPIC: forge.cdc.transactions
+    volumes:
+      - ./portfolio-5-distributed-cloud/lakehouse/spark:/opt/forge/spark:ro
+    depends_on:
+      kafka:
+        condition: service_healthy
+        required: false
+      polaris-catalog:
+        condition: service_healthy
+        required: false
+    networks:
+      - forge-data-mesh
+
+  # ---------------------------------------------------------------------------
+  # Portfolio 5: Apache Airflow (orchestrates dbt Gold build + OpenLineage emission)
+  # ---------------------------------------------------------------------------
+  airflow:
+    image: apache/airflow:3.0.6
+    container_name: forge-airflow
+    init: true
+    restart: unless-stopped
+    profiles:
+      - lakehouse
+      - full
+    command: ["standalone"]
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/forge/dags
+      AIRFLOW__OPENLINEAGE__TRANSPORT: '{"type": "console"}'
+      _PIP_ADDITIONAL_REQUIREMENTS: dbt-trino==1.9.3 apache-airflow-providers-openlineage
+      TRINO_HOST: trino
+      TRINO_INTERNAL_PORT: "8080"
+    volumes:
+      - ./portfolio-5-distributed-cloud/lakehouse/airflow/dags:/opt/forge/dags:ro
+      - ./portfolio-5-distributed-cloud/lakehouse/dbt:/opt/forge/dbt
+    ports:
+      - "${AIRFLOW_PORT:-8085}:8080"
+    depends_on:
+      trino:
+        condition: service_healthy
+        required: false
+    networks:
+      - forge-data-mesh
+
+  # ---------------------------------------------------------------------------
+  # GPMorgan Forge Application, Test Runner & Portfolio Evidence Engine
+  # ---------------------------------------------------------------------------
+  forge-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: forge-app-verifier
+    init: true
+    profiles:
+      - test
+      - full
+    environment:
+      FORGE_ENV: ${FORGE_ENV:-verification}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-gpmorgan-forge-core}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+      POSTGRES_DSN: postgresql://${POSTGRES_USER:-forge_admin}:${POSTGRES_PASSWORD:-forge_secure_pass_2026}@postgres-primary:5432/${POSTGRES_DB:-gpmorgan_forge}?sslmode=require
+      POSTGRES_REPLICA_DSN: postgresql://${POSTGRES_REPLICA_USER:-forge_readonly}:${POSTGRES_REPLICA_PASSWORD:-forge_replica_pass_2026}@postgres-replica:5432/${POSTGRES_DB:-gpmorgan_forge}?sslmode=require
+      COCKROACH_DSN: postgresql://root@cockroachdb:${COCKROACH_SQL_PORT:-26257}/defaultdb?sslmode=disable
+      TIMESCALE_DSN: postgresql://${TIMESCALE_USER:-forge_ts_admin}:${TIMESCALE_PASSWORD:-forge_ts_pass_2026}@timescaledb:5432/${TIMESCALE_DB:-gpmorgan_forge_tsdb}
+      REDIS_URL: redis://redis:6379/${REDIS_DB:-0}
+      MONGO_URI: mongodb://${MONGO_USER:-forge_mongo_admin}:${MONGO_PASSWORD:-forge_mongo_pass_2026}@mongodb:27017/${MONGO_DB:-gpmorgan_forge_docs}?authSource=admin
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_AUTH: ${NEO4J_AUTH:-neo4j/forge_graph_pass_2026}
+      CASSANDRA_HOST: ${CASSANDRA_HOST:-cassandra}
+      CASSANDRA_CQL_PORT: ${CASSANDRA_CQL_PORT:-9042}
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+      FLINK_REST_URI: ${FLINK_REST_URI:-http://flink:8081}
+      KMS_MASTER_KEY_ID: ${KMS_MASTER_KEY_ID:-kms-ng-cbn-key-2026-01}
+      POLARIS_CATALOG_URI: ${POLARIS_CATALOG_URI:-http://polaris-catalog:8181/api/catalog}
+      POLARIS_DEFAULT_BRANCH: ${POLARIS_DEFAULT_BRANCH:-main}
+      TRINO_COORDINATOR_URI: ${TRINO_COORDINATOR_URI:-http://trino:8080}
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+        required: false
+      redis:
+        condition: service_healthy
+        required: false
+    networks:
+      - forge-data-mesh
+
+networks:
+  forge-data-mesh:
+    name: gpmorgan-forge-network
+    driver: bridge
+
+volumes:
+  postgres_primary_data:
+    name: forge-postgres-primary-data
+  postgres_replica_data:
+    name: forge-postgres-replica-data
+  cockroachdb_data:
+    name: forge-cockroachdb-data
+  mongodb_data:
+    name: forge-mongodb-data
+  neo4j_data:
+    name: forge-neo4j-data
+  redis_data:
+    name: forge-redis-data
+  cassandra_data:
+    name: forge-cassandra-data
+  timescaledb_data:
+    name: forge-timescaledb-data
+  kafka_data:
+    name: forge-kafka-data

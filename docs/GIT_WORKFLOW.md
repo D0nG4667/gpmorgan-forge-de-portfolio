@@ -85,7 +85,7 @@ Every commit message is validated by [`scripts/verify_commit_msg.py`](../scripts
 
 1. **`lint-and-typecheck` (Static Analysis, Linting & Repo Hygiene)**:
    - Runs `uv run ruff check .`, `uv run ruff format --check .`, `uv run mypy src tests`, `uv run rumdl check .`, and `uv run python scripts/verify_commit_msg.py --audit-repo` on Python 3.15.
-2. **`test-and-coverage` (Unit, Integration & E2E Tests — 100% Coverage Gate)**:
+2. **`test-and-coverage` (Unit, Integration & E2E Tests: 100% Coverage Gate)**:
    - Runs `uv run pytest --cov=src/gpmorgan_forge --cov-branch --cov-report=term-missing --cov-fail-under=100` across [`tests/unit/`](../tests/unit/__init__.py), [`tests/integration/`](../tests/integration/__init__.py), and [`tests/e2e/`](../tests/e2e/__init__.py), followed by `uv run python -m gpmorgan_forge.evidence_generator --verify`.
 3. **`docker-compose-validation` (Container & Compose Spec Verification)**:
    - Validates `docker compose -f compose.yaml --profile full config -q`, builds the multi-stage verification image (`docker build --target runtime -t gpmorgan-forge:ci .`), and executes `docker run --rm gpmorgan-forge:ci`.

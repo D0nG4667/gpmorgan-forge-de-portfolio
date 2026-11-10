@@ -1,4 +1,4 @@
-"""GPMorgan Forge — Multi-Currency Core Banking, Double-Entry Ledger & Polyglot Data Platform."""
+"""GPMorgan Forge: Multi-Currency Core Banking, Double-Entry Ledger & Polyglot Data Platform."""
 
 from __future__ import annotations
 

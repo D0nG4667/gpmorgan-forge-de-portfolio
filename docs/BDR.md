@@ -1,4 +1,4 @@
-# Business & Data Requirements Document (BDR) — GPMorgan Forge
+# Business & Data Requirements Document (BDR): GPMorgan Forge
 
 **Document Identifier**: `BDR-GPMF-2026-001`  
 **Platform Domain**: Tier-1 Digital Banking & Financial Technology Core Platform  
@@ -68,7 +68,7 @@ flowchart LR
 | **FR-02** | Multi-Currency Accounts & Beneficiaries | Manage `CHECKING`, `SAVINGS`, `TREASURY`, `ESCROW`, and `SETTLEMENT_GL` accounts across `NGN`, `USD`, `GBP`, and `EUR` with NUBAN 10-digit numbers, daily transfer limits, and whitelisted `beneficiaries`. | PostgreSQL (`accounts`, `beneficiaries`) | [`models.py`](../src/gpmorgan_forge/models.py) |
 | **FR-03** | Double-Entry Atomic Transfers & Reversals | Every transfer, deposit, withdrawal, or contra-entry reversal must generate a `transactions` header, two balanced `DEBIT`/`CREDIT` rows in `ledger_entries`, and a SHA-256 hash-chained `transaction_audit_logs` record. | PostgreSQL (`transactions`, `ledger_entries`, `transaction_audit_logs`) | [`operations.py`](../src/gpmorgan_forge/operations.py) |
 | **FR-04** | Payment Card Tokenisation | Issue payment cards storing only SHA-256 `card_token` and PCI-DSS v4.0 `masked_pan` (`^XXXX-XXXX-XXXX-[0-9]{4}$`), with spending limits and lifecycle status controls. | PostgreSQL (`payment_cards`) | [`operations.py`](../src/gpmorgan_forge/operations.py) |
-| **FR-05** | Real-Time AML Fraud Alerts & Graph Detection | Emit `fraud_alerts` on high-value transfers (`CBN_LARGE_VALUE_THRESHOLD`), detect 2–5 hop circular money-laundering rings (`detect_circular_transfer_loops`), and cluster shared-device mule accounts (`detect_shared_device_mule_clusters`). | PostgreSQL (`fraud_alerts`) & Neo4j (`Customer`, `Account`, `Device`, `FinancialProduct`) | [`neo4j_fraud_graph.cypher`](../portfolio-4-nosql/neo4j_fraud_graph.cypher), [`nosql_models.py`](../src/gpmorgan_forge/nosql_models.py) |
+| **FR-05** | Real-Time AML Fraud Alerts & Graph Detection | Emit `fraud_alerts` on high-value transfers (`CBN_LARGE_VALUE_THRESHOLD`), detect 2-5 hop circular money-laundering rings (`detect_circular_transfer_loops`), and cluster shared-device mule accounts (`detect_shared_device_mule_clusters`). | PostgreSQL (`fraud_alerts`) & Neo4j (`Customer`, `Account`, `Device`, `FinancialProduct`) | [`neo4j_fraud_graph.cypher`](../portfolio-4-nosql/neo4j_fraud_graph.cypher), [`nosql_models.py`](../src/gpmorgan_forge/nosql_models.py) |
 | **FR-06** | Right-to-Erasure, Masking, DP & ZKPs | Fulfil NDPA 2023 / GDPR erasure requests via `anonymise_customer_pii` while preserving statutory `ledger_entries`, enforce dynamic masking, inject Laplace Differential Privacy noise, and verify Zero-Knowledge Proofs (ZKPs). | PostgreSQL & Python Privacy Engine | [`security_rbac_rls_privacy.sql`](../portfolio-5-distributed-cloud/security_rbac_rls_privacy.sql), [`distributed_privacy.py`](../src/gpmorgan_forge/distributed_privacy.py) |
 
 ---
@@ -79,7 +79,7 @@ flowchart LR
 | :--- | :--- | :--- |
 | **Ledger Consistency** | `100%` strict zero-sum & hash-chain integrity | Canonical ascending-UUID `SELECT ... FOR UPDATE` + Optimistic `version` fencing + `REPEATABLE READ` / `SERIALIZABLE` isolation |
 | **P99 Transfer Latency** | `< 35 ms` (intra-region OLTP commit) | Covering B-Tree indexes (`INCLUDE`), Redis 8.0 `SET NX EX` idempotency fast-path |
-| **Fraud Ring Traversal Latency** | `< 15 ms` for 2–5 hop cyclic detection | Neo4j 5.26 LTS index-free adjacency (`O(k)` hop complexity vs. `O(N^k)` relational joins) |
+| **Fraud Ring Traversal Latency** | `< 15 ms` for 2-5 hop cyclic detection | Neo4j 5.26 LTS index-free adjacency (`O(k)` hop complexity vs. `O(N^k)` relational joins) |
 | **Recovery Point Objective (RPO)** | `0 seconds` (Zero data loss for committed txns) | Synchronous primary-to-standby WAL streaming replication (`synchronous_commit = on`) |
 | **Recovery Time Objective (RTO)** | `< 30 seconds` automated failover | Lag-aware `DistributedClusterRouter` with automatic read-replica failover to `postgres-primary` when lag `> 100 ms` |
 | **Historical Data Retention** | `7 Years` online/warm + cold archive | Quarterly declarative range partitioning (`transactions_partitioned`), modulus-4 hash sharding (`accounts_sharded`), and S3/HDFS Bronze Data Lake |
@@ -90,10 +90,10 @@ flowchart LR
 
 All data elements in GPMorgan Forge are classified into four sensitivity tiers in accordance with **NDPA 2023** and **PCI-DSS v4.0**:
 
-- **Tier 4 — Restricted / Secret**: Cryptographic hashes (`bvn_sha256`, `document_ref_hash`), `card_token`, AEAD-encrypted national IDs (`ENCv1:...`). Encrypted at rest (`AES-256`) and never exposed in cleartext views.
-- **Tier 3 — Confidential PII / Financial**: Customer names, emails, phone numbers, exact account balances, transfer amounts, and ledger postings. Protected by Row-Level Security (RLS) and dynamic masking.
-- **Tier 2 — Internal Operational**: Consent records, fraud alert scores, partition telemetry, device session metadata.
-- **Tier 1 — Public / Reference**: ISO-4217 currency enums, NIBSS bank codes, financial product catalog nodes.
+- **Tier 4 (Restricted / Secret)**: Cryptographic hashes (`bvn_sha256`, `document_ref_hash`), `card_token`, AEAD-encrypted national IDs (`ENCv2:...`). Encrypted at rest (`AES-256`) and never exposed in cleartext views.
+- **Tier 3 (Confidential PII / Financial)**: Customer names, emails, phone numbers, exact account balances, transfer amounts, and ledger postings. Protected by Row-Level Security (RLS) and dynamic masking.
+- **Tier 2 (Internal Operational)**: Consent records, fraud alert scores, partition telemetry, device session metadata.
+- **Tier 1 (Public / Reference)**: ISO-4217 currency enums, NIBSS bank codes, financial product catalog nodes.
 
 | Entity / Table | Primary Key | Normalization Form | Storage Engine | Partitioning / Indexing Strategy | Sensitivity Tier |
 | :--- | :--- | :--- | :--- | :--- | :--- |

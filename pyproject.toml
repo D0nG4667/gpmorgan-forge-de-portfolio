@@ -25,6 +25,7 @@ keywords = [
 ]
 dependencies = [
     "sqlalchemy>=2.1.8",
+    "cryptography>=45.0.0",
 ]
 
 [project.optional-dependencies]

@@ -121,8 +121,8 @@ forgeDb.kyc_verifications.insertMany([
     encrypted_pii_fields: {
       encryption_algorithm: "AEAD_AES_256_GCM",
       key_id: "kms-ng-cbn-key-2026-01",
-      bvn_or_national_id_cipher: "ENCv2:9f8e7d6c5b4a3928172635445566778899aabbccddeeff",
-      tax_id_cipher: "ENCv2:11223344556677889900aabbccddeeff001122334455"
+      bvn_or_national_id_cipher: "ENCv2:kms-ng-cbn-key-2026-01:BCB7boUf442n-Wbzd6Ohu1DTZbmO09q-Jfh4rcY3EOEULCfCNrqB57kjf0Pckg==",
+      tax_id_cipher: "ENCv2:kms-ng-cbn-key-2026-01:UOTGsqJrgr2N0kDoaF-WfPXyT4-Fpwxx_clpNr0dqsZ7A9wOSFNNA7F02-1b4Q=="
     },
     document_artifacts: [
       {
@@ -142,7 +142,7 @@ forgeDb.kyc_verifications.insertMany([
     encrypted_pii_fields: {
       encryption_algorithm: "AEAD_AES_256_GCM",
       key_id: "kms-ng-cbn-key-2026-01",
-      bvn_or_national_id_cipher: "ENCv2:5566778899aabbccddeeff00112233445566778899aa"
+      bvn_or_national_id_cipher: "ENCv2:kms-ng-cbn-key-2026-01:KKE5EMoJYZLsNgQPkLFpXKLJUusK9w7OpUZRKmqpRjoxDvbmZDB3g7-n3BpeFQ=="
     },
     document_artifacts: [
       {

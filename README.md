@@ -47,9 +47,10 @@ flowchart TB
     end
 
     subgraph Core["GPMorgan Forge Application & Domain Layer (src/gpmorgan_forge)"]
-        OPS["Core Banking Operations (operations.py) - Double-Entry Ledger, Reversals & Audit"]
+        OPS["Core Banking & Query Engine (operations.py, query_optimizer.py)"]
         CONC["Concurrency & Lock Manager (concurrency.py) - Canonical Lock Ordering & OCC Fencing"]
-        PRIV["Distributed & Privacy Engine (distributed_privacy.py) - Shard Router, RBAC/RLS, DP & ZKP"]
+        NOSQL["Polyglot NoSQL & Telemetry Engine (nosql_models.py)"]
+        PRIV["Distributed, Auth, Privacy & ZKP Engine (distributed_privacy.py, identity.py, zkp.py)"]
     end
 
     subgraph Storage["Polyglot Persistence Tier"]
@@ -61,26 +62,28 @@ flowchart TB
     end
 
     subgraph BigData["Stateful Streaming & Open Table Medallion Lakehouse (Bronze -> Silver -> Gold)"]
-        KAFKA[["Apache Kafka 4.0 (KRaft) Distributed CDC Event Bus"]]
+        KAFKA[["Apache Kafka 4.0 (KRaft) + Debezium CDC Event Bus"]]
         FLINK[["Apache Flink (Sub-Second Keyed Velocity & Structuring Filter)"]]
-        BRONZE[("Bronze Data Lake (AWS S3 / HDFS Raw Immutable Apache Iceberg)")]
-        SILVER[["Silver Lakehouse (Spark 4.0 + Apache Iceberg + Apache Polaris + Trino)"]]
+        SPARK[["Apache Spark 4.0 Structured Streaming (Contract Validation & MERGE)"]]
+        BRONZE[("Bronze & DLQ Tables (Apache Iceberg Raw Append & Quarantine)")]
+        SILVER[["Silver Lakehouse (Apache Iceberg + Apache Polaris + Trino)"]]
         GOLD[("Gold Data Warehouse (Airflow + dbt Star Schema + OpenLineage BCBS 239)")]
     end
 
     MOB & POS --> OPS
     ANALYST --> PRIV
-    OPS --> CONC
+    OPS --> CONC & NOSQL
     CONC -->|"ACID Repeatable Read / Serializable"| PG
-    OPS -->|"Two-Tier Idempotency & Cache"| REDIS
-    OPS -->|"Polymorphic KYC & AEAD Encryption"| MONGO
-    OPS -->|"AML Graph Ring Detection"| NEO
-    OPS -->|"FX Ticks & Read-Only Timeline"| CASS
-    PG -->|"CDC Event Stream"| KAFKA
+    NOSQL -->|"Two-Tier Idempotency & Cache"| REDIS
+    NOSQL -->|"Polymorphic KYC & AEAD Encryption"| MONGO
+    NOSQL -->|"AML Graph Ring Detection"| NEO
+    NOSQL -->|"FX Ticks & Read-Only Timeline"| CASS
+    PG -->|"Debezium CDC Stream"| KAFKA
     KAFKA -->|"Sub-Second Stream"| FLINK
     FLINK -->|"Trigger on Velocity Breach"| NEO
-    KAFKA -->|"Raw Append (Schema-on-Read)"| BRONZE
-    BRONZE -->|"Spark 4.0 Micro-Batch"| SILVER
+    KAFKA -->|"Micro-Batch Stream"| SPARK
+    SPARK -->|"Raw Append & DLQ"| BRONZE
+    SPARK -->|"ACID MERGE INTO"| SILVER
     SILVER -->|"Curated Star Schema (Schema-on-Write)"| GOLD
 ```
 
@@ -102,8 +105,8 @@ erDiagram
     TRANSACTIONS ||--o| TRANSACTIONS : "reverses (parent_transaction_id)"
     TRANSACTIONS ||--|{ LEDGER_ENTRIES : "posts balanced legs"
     ACCOUNTS ||--o{ LEDGER_ENTRIES : "records movement"
-    TRANSACTIONS ||--o{ TRANSACTION_AUDIT_LOGS : "emits hash-chained audit"
-    ACCOUNTS ||--o{ TRANSACTION_AUDIT_LOGS : "audits state"
+    TRANSACTIONS |o--o{ TRANSACTION_AUDIT_LOGS : "emits hash-chained audit"
+    ACCOUNTS |o--o{ TRANSACTION_AUDIT_LOGS : "audits state"
     TRANSACTIONS ||--o{ FRAUD_ALERTS : "triggers"
     ACCOUNTS ||--o{ FRAUD_ALERTS : "flags"
 ```
@@ -136,8 +139,8 @@ erDiagram
 - **Partitioning, CockroachDB Multi-Region, Flink, Open Table Lakehouse, Privacy & Observability** ([`src/gpmorgan_forge/distributed_privacy.py`](src/gpmorgan_forge/distributed_privacy.py), [`src/gpmorgan_forge/identity.py`](src/gpmorgan_forge/identity.py), [`src/gpmorgan_forge/zkp.py`](src/gpmorgan_forge/zkp.py)):
   - Quarterly range partitioning (`transactions_partitioned`), modulus-4 hash sharding (`accounts_sharded`), lag-aware read-replica routing, and **CockroachDB** multi-region active-active Raft `SERIALIZABLE` routing (`DistributedClusterRouter`).
   - **Apache Flink** stateful sub-second velocity engine (`FlinkStatefulVelocityEngine`) filtering Kafka 4.0 streams before triggering Neo4j Cypher traversals.
-  - Open Table Medallion Lakehouse (`MedallionLakehousePipeline`, [`lakehouse/`](portfolio-5-distributed-cloud/lakehouse/README.md)) combining **Apache Iceberg** time-travel snapshots (`FOR SYSTEM_VERSION AS OF`) and native table branching/tagging, **Apache Polaris** REST catalog governance (RBAC & vended cloud storage credentials), **Trino** zero-ETL federated SQL, **Apache Airflow + dbt** Gold Star-Schema transformations, and **OpenLineage** column-level provenance (**BCBS 239 / NDPA 2023 / GDPR**).
-  - Zero-Trust RBAC/ABAC/RLS (`AccessControlEngine`), RFC 6238 TOTP & OIDC RS256/EdDSA JWT step-up MFA (`IdentityVerificationEngine`), Privacy Engineering (`DataPrivacyEngine`), non-interactive `secp256k1` Pedersen + CDS94 Zero-Knowledge Range Proofs (`ZKPRangeProofEngine`), and OpenTelemetry distributed tracing (`DatabaseTelemetryTracer`).
+  - Open Table Medallion Lakehouse (`MedallionLakehousePipeline`, [`lakehouse/`](portfolio-5-distributed-cloud/lakehouse/README.md)) combining **Apache Iceberg** time-travel snapshots (`FOR SYSTEM_VERSION AS OF`) and native table branching/tagging, **Apache Polaris** REST catalog governance (RBAC & vended cloud storage credentials), **Trino** zero-ETL federated SQL, **Apache Airflow + dbt** Gold Star-Schema transformations, and **OpenLineage** dataset and run-level provenance (**BCBS 239 / NDPA 2023 / GDPR**).
+  - Zero-Trust RBAC/ABAC/RLS (`AccessControlEngine`), RFC 6238 TOTP & OIDC RS256/EdDSA JWT step-up MFA (`TotpVerifier`, `OidcTokenValidator`), Privacy Engineering (`DataPrivacyEngine`), non-interactive `secp256k1` Pedersen + CDS94 Zero-Knowledge Range Proofs (`KycCredentialIssuer`, `prove_eligibility`, `verify_eligibility`), and OpenTelemetry distributed tracing (`DatabaseTelemetryTracer`).
 
 ---
 
@@ -146,10 +149,10 @@ erDiagram
 | Regulation / Standard | Technical Enforcement in GPMorgan Forge | Implementation File |
 | :--- | :--- | :--- |
 | **NDPA 2023 & EU GDPR (Right to Erasure)** | Irreversible cryptographic PII redaction (`anonymise_customer_pii` / `DataPrivacyEngine.anonymise_customer_record`) revokes active consents and redacts customer PII while preserving statutory double-entry `ledger_entries` | [`security_rbac_rls_privacy.sql`](portfolio-5-distributed-cloud/security_rbac_rls_privacy.sql), [`distributed_privacy.py`](src/gpmorgan_forge/distributed_privacy.py) |
-| **NDPA 2023 & GDPR (Tenant & ABAC Isolation)** | PostgreSQL Row-Level Security (`ENABLE ROW LEVEL SECURITY` + `FORCE ROW LEVEL SECURITY`) restricting `forge_customer` (`pol_customers_customer_isolation`, `pol_accounts_customer_isolation`) and `forge_compliance_dpo` (`pol_customers_dpo_jurisdiction`) | [`security_rbac_rls_privacy.sql`](portfolio-5-distributed-cloud/security_rbac_rls_privacy.sql), [`identity.py`](src/gpmorgan_forge/identity.py) |
+| **NDPA 2023 & GDPR (Tenant & ABAC Isolation)** | PostgreSQL Row-Level Security (`ENABLE ROW LEVEL SECURITY` + `FORCE ROW LEVEL SECURITY`) restricting `forge_customer` (`pol_customers_customer_isolation`, `pol_accounts_customer_isolation`) and `forge_compliance_dpo` (`pol_customers_dpo_jurisdiction`) alongside `AccessControlEngine` | [`security_rbac_rls_privacy.sql`](portfolio-5-distributed-cloud/security_rbac_rls_privacy.sql), [`distributed_privacy.py`](src/gpmorgan_forge/distributed_privacy.py), [`identity.py`](src/gpmorgan_forge/identity.py) |
 | **PCI-DSS v4.0 (Cardholder Data Protection)** | Cleartext PAN storage prohibited via `chk_payment_cards_masked_pan`; only SHA-256 `card_token` and `masked_pan` (`XXXX-XXXX-XXXX-1234`) persisted and exposed via `v_masked_payment_cards` and `v_masked_customers` | [`schema.sql`](portfolio-1-database-design/schema.sql), [`security_rbac_rls_privacy.sql`](portfolio-5-distributed-cloud/security_rbac_rls_privacy.sql) |
 | **CBN AML/CFT, Differential Privacy & ZKPs** | Append-only `ledger_entries` and `transaction_audit_logs` protected by `BEFORE UPDATE OR DELETE` triggers (`trg_immutable_ledger_entries`, `trg_immutable_audit_logs`); Laplace Differential Privacy and `secp256k1` Zero-Knowledge Proofs for KYC claims | [`schema.sql`](portfolio-1-database-design/schema.sql), [`distributed_privacy.py`](src/gpmorgan_forge/distributed_privacy.py), [`zkp.py`](src/gpmorgan_forge/zkp.py) |
-| **BCBS 239 (Risk Data Aggregation & Lineage)** | Point-in-time historical reproducibility (`FOR SYSTEM_VERSION AS OF`) via **Apache Iceberg** & **Apache Polaris** REST catalog, **Trino** zero-ETL federation, **Airflow + dbt** Gold Star-Schema marts, and **OpenLineage** column-level provenance | [`distributed_privacy.py`](src/gpmorgan_forge/distributed_privacy.py), [`lakehouse/`](portfolio-5-distributed-cloud/lakehouse/README.md), [`0005-lakehouse-kafka-spark-architecture.md`](docs/adr/0005-lakehouse-kafka-spark-architecture.md) |
+| **BCBS 239 (Risk Data Aggregation & Lineage)** | Point-in-time historical reproducibility (`FOR SYSTEM_VERSION AS OF`) via **Apache Iceberg** & **Apache Polaris** REST catalog, **Trino** zero-ETL federation, **Airflow + dbt** Gold Star-Schema marts, and **OpenLineage** dataset and run-level provenance | [`distributed_privacy.py`](src/gpmorgan_forge/distributed_privacy.py), [`lakehouse/`](portfolio-5-distributed-cloud/lakehouse/README.md), [`0005-lakehouse-kafka-spark-architecture.md`](docs/adr/0005-lakehouse-kafka-spark-architecture.md) |
 
 ---
 
@@ -158,6 +161,10 @@ erDiagram
 ### Local Python 3.15 Setup
 
 ```bash
+# Clone the repository and enter the workspace
+git clone https://github.com/D0nG4667/gpmorgan-forge-de-portfolio.git
+cd gpmorgan-forge-de-portfolio
+
 # Install dependencies and virtual environment
 uv sync --all-extras --dev
 

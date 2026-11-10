@@ -6,8 +6,12 @@ on:
       - main
       - "feat/**"
       - "fix/**"
+      - "perf/**"
+      - "refactor/**"
       - "docs/**"
       - "test/**"
+      - "ci/**"
+      - "chore/**"
   pull_request:
     branches:
       - main

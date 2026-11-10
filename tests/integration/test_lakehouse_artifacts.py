@@ -154,6 +154,7 @@ def test_airflow_dag_orchestrates_freshness_dbt_build_and_reconciliation() -> No
     assert '"retries": 3' in source
     assert "dbt source freshness" in source
     assert "dbt build" in source
+    assert "--select +marts" in source
 
 
 @pytest.mark.integration

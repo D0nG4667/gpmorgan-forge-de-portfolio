@@ -76,15 +76,15 @@ SELECT
     status
 FROM payment_cards;
 
--- Revoke raw PII table access from analysts; grant only masked views & materialised views
+-- Revoke raw PII table access from analysts; grant only dynamically masked views
 REVOKE ALL ON customers, kyc_records, payment_cards FROM forge_analyst;
 GRANT SELECT ON v_masked_customers, v_masked_payment_cards TO forge_analyst;
 
 -- -----------------------------------------------------------------------------
 -- 3. Row-Level Security (RLS) & Attribute-Based Access Control (ABAC)
 --    Restricts `forge_customer` to rows matching session context attribute
---    `app.current_customer_id`, and restricts regional analysts to their
---    assigned jurisdiction `app.allowed_country_code` (Data Residency).
+--    `app.current_customer_id`, and restricts `forge_compliance_dpo` to their
+--    assigned jurisdiction `app.actor_country` (Data Residency).
 -- -----------------------------------------------------------------------------
 ALTER TABLE customers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE customers FORCE ROW LEVEL SECURITY;

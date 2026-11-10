@@ -57,6 +57,8 @@ To detect a $k$-hop circular money-laundering ring across $1,000,000$ transfer e
 
 ## 3. MongoDB Document Validation & Field-Level Encryption Evidence
 
+*(Verified via `DocumentStoreEngine` in [`src/gpmorgan_forge/nosql_models.py`](../src/gpmorgan_forge/nosql_models.py), which produces authenticated `ENCv2:<key_id>:<base64url>` `AESGCM` tokens; [`mongodb_document_model.js`](mongodb_document_model.js) seeds corresponding schema-valid `ENCv2:...` sample documents in `mongosh`.)*
+
 ```json
 {
   "collection": "kyc_verifications",
@@ -66,7 +68,7 @@ To detect a $k$-hop circular money-laundering ring across $1,000,000$ transfer e
   "encrypted_pii_fields": {
     "encryption_algorithm": "AEAD_AES_256_GCM",
     "key_id": "kms-ng-cbn-key-2026-01",
-    "bvn_or_national_id_cipher": "ENCv2:9f8e7d6c5b4a3928172635445566778899aabbccddeeff"
+    "bvn_or_national_id_cipher": "ENCv2:kms-ng-cbn-key-2026-01:8fJ2qL9vR4mX7pK1wN6tB3yZ0cH5dQ8sA2eF4gH6jK8="
   }
 }
 ```

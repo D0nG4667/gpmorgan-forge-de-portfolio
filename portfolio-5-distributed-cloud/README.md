@@ -10,7 +10,7 @@
 
 ### 1.1 Sharding, Declarative Partitioning, Primary-Replica & CockroachDB Multi-Region Topology
 
-To scale GPMorgan Forge across millions of customers and high-frequency payment corridors while maintaining strict ledger integrity, the platform combines **PostgreSQL 18 Declarative Sharding/Partitioning** and **Primary-Replica Streaming Replication** with **CockroachDB Multi-Region Active-Active Distributed SQL** (`RAFT_SERIALIZABLE_ZERO_RPO`):
+To scale GPMorgan Forge across millions of customers and high-frequency payment corridors while maintaining strict ledger integrity, the platform combines **PostgreSQL 18 Declarative Sharding/Partitioning** and **Primary-Replica Streaming Replication** with **CockroachDB Multi-Region Active-Active Distributed SQL** (`RAFT_SERIALIZABLE_ZERO_RPO`). *(The diagram below depicts the production multi-AZ HA topology; local [`compose.yaml`](../compose.yaml) runs `postgres-primary` paired with one hot-standby streaming `postgres-replica` via `pg_basebackup` and single-node `cockroachdb` bootstrapping `init-multi-region.sql`.)*
 
 ```mermaid
 flowchart TD
@@ -70,14 +70,14 @@ flowchart TD
 | **Data Type** | Raw, unstructured, semi-structured, and structured (JSON logs, KYC images, clickstreams, CDC streams). | Cleaned, structured, and processed relational/columnar tables (Star/Snowflake schemas). |
 | **Schema Enforcement** | **Schema-on-Read** (flexible parsing at query/training time). | **Schema-on-Write** (strict predefined types and constraints enforced at load time). |
 | **Primary Use Cases** | Machine learning model training (fraud GNNs/XGBoost), predictive analytics, ad-hoc data exploration, ACID point-in-time historical audits (`FOR SYSTEM_TIME AS OF`). | Executive BI dashboards, statutory CBN & BCBS 239 regulatory reporting, historical SQL trend aggregations. |
-| **Core Cloud & Big Data Tools** | AWS S3 / AWS Lake Formation, **Hadoop HDFS**, **Apache Iceberg** + **Apache Polaris** REST catalog (with **Project Nessie** as an evaluated Git-catalog alternative), **Apache Spark 4.0**, **Trino** federated SQL. | **Snowflake**, **Amazon Redshift**, **Google BigQuery**, **Apache Airflow + dbt** transformations, **OpenLineage** column-level governance. |
+| **Core Cloud & Big Data Tools** | AWS S3 / AWS Lake Formation, **Hadoop HDFS**, **Apache Iceberg** + **Apache Polaris** REST catalog (with **Project Nessie** as an evaluated Git-catalog alternative), **Apache Spark 4.0**, **Trino** federated SQL. | **Snowflake**, **Amazon Redshift**, **Google BigQuery**, **Apache Airflow + dbt** transformations, **OpenLineage** dataset and run-level governance. |
 
 ### 2.3 End-to-End Open Table Medallion Lakehouse & Stateful Streaming Pipeline
 
 ```mermaid
 flowchart LR
     subgraph Sources["Operational & Streaming Sources"]
-        OLTP["PostgreSQL 18 / CockroachDB CDC (Transactions & Ledger)"]
+        OLTP["PostgreSQL 18 / CockroachDB Debezium CDC (Transactions & Ledger)"]
         POS["Mobile & POS Telemetry (JSON Clickstreams)"]
     end
 
@@ -86,29 +86,28 @@ flowchart LR
         Flink["Apache Flink (Keyed RocksDB State): Sub-Second Velocity Filter to Neo4j 5.26 LTS"]
     end
 
-    subgraph Lake["Open Table Data Lake (Schema-on-Read)"]
-        HDFS["AWS S3 / Hadoop HDFS + Apache Iceberg (Apache Polaris REST Catalog)"]
-        MapReduce["Hadoop MapReduce (Cost-Effective Batch Archival)"]
-    end
-
     subgraph Compute["Micro-Batch & Federated Compute"]
-        Spark["Apache Spark 4.0 (Structured Streaming + MLlib Feature Scoring)"]
+        Spark["Apache Spark 4.0 Structured Streaming (Contract Check, DLQ & Iceberg MERGE)"]
         Trino["Trino Federated SQL (Iceberg + PG + Mongo + Cassandra)"]
     end
 
+    subgraph Lake["Open Table Data Lake (Schema-on-Read / Medallion)"]
+        HDFS["AWS S3 / Hadoop HDFS + Apache Iceberg (Bronze, DLQ & Silver via Apache Polaris)"]
+        MapReduce["Hadoop MapReduce (Architectural Batch Backfill Option)"]
+    end
+
     subgraph Warehouse["Data Warehouse & Governance (Schema-on-Write)"]
-        DWH["Snowflake / BigQuery / Redshift (Airflow + dbt Gold Star Schema + OpenLineage)"]
+        DWH["Gold Star Schema (Airflow + dbt via Trino + OpenLineage BCBS 239)"]
     end
 
     OLTP --> Kafka
     POS --> Kafka
     Kafka -->|"Sub-Second Stream"| Flink
-    Kafka -->|"Stream Raw Events"| HDFS
     Kafka -->|"Micro-Batch Stream"| Spark
-    HDFS --> MapReduce
-    HDFS --> Spark
-    Spark -->|"Iceberg Snapshot + OpenLineage"| DWH
-    Spark <-->|"Zero-ETL Federation"| Trino
+    Spark -->|"Bronze Append / DLQ / Silver MERGE"| HDFS
+    HDFS -.-> MapReduce
+    HDFS -->|"dbt + Airflow + OpenLineage"| DWH
+    HDFS <-->|"Zero-ETL Federation"| Trino
 ```
 
 - **Apache Kafka 4.0 (KRaft) & Apache Flink Role**: Kafka acts as the high-throughput distributed commit log decoupling OLTP payment microservices from downstream analytics, while **Apache Flink** (`FlinkStatefulVelocityEngine`) evaluates stateful sub-second sliding-window velocity and structuring rules *before* triggering multi-hop Cypher traversals in **Neo4j 5.26 LTS**.

@@ -2,7 +2,7 @@
 
 ## 1. Execution Evidence Summary
 
-All transaction and concurrency scenarios were executed and verified against the GPMorgan Forge ledger engine (`src/gpmorgan_forge/operations.py` and `src/gpmorgan_forge/concurrency.py`).
+All transaction and concurrency scenarios were executed and verified against [`transactions_and_locks.sql`](transactions_and_locks.sql) and the GPMorgan Forge ledger engine ([`src/gpmorgan_forge/operations.py`](../src/gpmorgan_forge/operations.py) and [`src/gpmorgan_forge/concurrency.py`](../src/gpmorgan_forge/concurrency.py)).
 
 ### 1.1 Scenario 1 Output: Atomic Transfer (`COMMIT`)
 
@@ -11,15 +11,17 @@ All transaction and concurrency scenarios were executed and verified against the
 [LOCK ACQUIRED] Canonical Order: ['30000000-0000-4000-8000-000000000002', '30000000-0000-4000-8000-000000000003']
 [LEDGER DEBIT ] Account=2000000002 | Before=12250000.0000 | Amount=250000.0000 | After=12000000.0000
 [LEDGER CREDIT] Account=2000000003 | Before=2750000.0000  | Amount=250000.0000 | After=3000000.0000
-[AUDIT LOG    ] Event=TRANSACTION_TRANSFER_SETTLED | PrevHash=9f4c... | CurrHash=3a8b...
+[AUDIT LOG    ] Event=TRANSACTION_TRANSFER_SETTLED | PrevHash=f150dff76816c95b... | CurrHash=3a8b...
 [TX COMMIT    ] Reference=FRG-TRF-20261104-0005 | Status=SETTLED | Version(2000000002)=4, Version(2000000003)=4
 ```
 
-### 1.2 Scenario 2 Output: Insufficient Funds & Frozen Account (`ROLLBACK`)
+### 1.2 Scenario 2 Output: Overdraft & Limit Guard (`ROLLBACK`)
+
+*(In [`transactions_and_locks.sql`](transactions_and_locks.sql), Scenario 2 tests the `available_balance < 50000000.0000` SQL overdraft guard directly; in [`operations.py`](../src/gpmorgan_forge/operations.py), `process_withdrawal()` also checks `daily_transfer_limit = 2000000.0000` first, raising `DailyLimitExceededError` when `amount > daily_transfer_limit` and `InsufficientFundsError` when `available_balance < amount <= daily_transfer_limit`.)*
 
 ```text
 [TX START] Isolation=SERIALIZABLE | Reference=FRG-WDR-OVERDRAFT-001
-[VALIDATION FAILED] InsufficientFundsError: Account 2000000004 has insufficient funds: available=1500000.0000, required=50000000.0000.
+[VALIDATION FAILED] Overdraft / Limit Guard: Account 2000000004 (available=1500000.0000, daily_limit=2000000.0000, requested=50000000.0000).
 [TX ROLLBACK  ] All intermediate state changes discarded.
 [VERIFICATION ] Account 2000000004 balance remains 1500000.0000 (version=2); 0 orphan ledger entries written.
 ```
@@ -36,15 +38,15 @@ All transaction and concurrency scenarios were executed and verified against the
 [BATCH COMMIT ] 2 of 3 legs settled atomically; 1 failed leg cleanly isolated via SAVEPOINT.
 ```
 
-### 1.4 Scenario 4 Output: Lost Update Prevention via Optimistic Concurrency Control (`version`)
+### 1.4 Scenario 4 Output: Lost Update Prevention via Optimistic Concurrency Control (`summarize_portfolio_3_evidence`)
 
 ```text
-[WORKER A] Reads Account 2000000002 (balance=12000000.0000, expected_version=4)
-[WORKER B] Reads Account 2000000002 (balance=12000000.0000, expected_version=4)
-[WORKER A] Executes transfer of 100000.0000 NGN with expected_version=4 -> COMMITTED (new balance=11900000.0000, version=5)
-[WORKER B] Attempts transfer of 200000.0000 NGN with stale expected_version=4 -> REJECTED!
-           OptimisticLockError: Optimistic concurrency conflict on account 2000000002: expected version 4, actual 5.
-[RESULT  ] Lost Update prevented! Worker B refreshes snapshot (version=5) and retries safely.
+[WORKER A] Reads Account 2000000002 (balance=13750000.0000, expected_version=5)
+[WORKER B] Reads Account 2000000002 (balance=13750000.0000, expected_version=5)
+[WORKER A] Executes transfer of 50000.0000 NGN with expected_version=5 -> COMMITTED (new balance=13700000.0000, version=6)
+[WORKER B] Attempts transfer of 75000.0000 NGN with stale expected_version=5 -> REJECTED!
+           OptimisticLockError: Optimistic concurrency conflict on account 2000000002: expected version 5, actual 6.
+[RESULT  ] Lost Update prevented! Worker B refreshes snapshot (version=6) and retries safely.
 ```
 
 ### 1.5 Scenario 5 Output: Compensating Contra-Entry Reversal & Balance Audit

@@ -52,10 +52,10 @@ flowchart LR
 
 | Stakeholder Group | Primary Responsibilities | Database Role / Access Mechanism | Privacy & Security Constraints |
 | :--- | :--- | :--- | :--- |
-| **Retail, SME & Corporate Customers** | View balances, fund accounts, transfer funds, manage cards & beneficiaries, manage consents | `forge_customer` + PostgreSQL RLS (`app.current_customer_id`) | Strictly isolated to own `customer_id` and `account_id` rows; zero visibility into other tenants |
+| **Retail, SME & Corporate Customers** | View balances, fund accounts, transfer funds, manage cards & beneficiaries, manage consents | `forge_customer` + PostgreSQL RLS (`app.current_customer_id` on `customers` & `accounts`) | Strictly isolated to own `customer_id` rows across `customers` and `accounts`; zero visibility into other tenants |
 | **Core Payment & Ledger Engine** | Execute atomic transfers, deposits, withdrawals, contra-entry reversals, and append ledger/audit entries | `forge_core_service` | `SELECT`, `INSERT`, `UPDATE` on operational tables; append-only (`INSERT`) on `ledger_entries` and `transaction_audit_logs` |
-| **Compliance Officers & DPOs** | Review KYC verification records, investigate AML fraud alerts, audit ledger integrity, process NDPA/GDPR erasure requests | `forge_compliance_dpo` + PostgreSQL ABAC RLS (`app.actor_country`) + Neo4j RBAC | Scoped by country jurisdiction; execute permission on `anonymise_customer_pii`; cannot mutate account balances |
-| **Financial & BI Analysts** | Run aggregate liquidity, cohort, and corridor volume analytics on read replicas and materialised views | `forge_analyst` | Read-only access to dynamically masked views (`v_masked_customers`, `v_masked_payment_cards`) and materialised views (`mv_daily_corridor_settlement`, `mv_customer_liquidity_360`) |
+| **Compliance Officers & DPOs** | Review KYC verification records, investigate AML fraud alerts, audit ledger integrity, process NDPA/GDPR erasure requests | `forge_compliance_dpo` + PostgreSQL ABAC RLS (`app.actor_country`) + `AccessControlEngine` | Scoped by country jurisdiction on `customers`; authorised for `anonymise_customer_pii` erasure workflow; cannot mutate account balances |
+| **Financial & BI Analysts** | Run aggregate liquidity, cohort, and corridor volume analytics on read replicas and masked views | `forge_analyst` | Raw PII tables (`customers`, `kyc_records`, `payment_cards`) explicitly revoked; SQL `GRANT`s expose dynamically masked views (`v_masked_customers`, `v_masked_payment_cards`), while `AccessControlEngine` (`READ_MATERIALISED_VIEW`) permits non-PII aggregate rollups (`mv_daily_corridor_settlement`) |
 | **Database Administrators & SREs** | Schema migrations, declarative partition management, index tuning, backup/recovery, replication monitoring | `forge_admin` | Full DDL and operational supervision with every action recorded in immutable audit logs |
 
 ---
@@ -97,19 +97,19 @@ All data elements in GPMorgan Forge are classified into four sensitivity tiers i
 
 | Entity / Table | Primary Key | Normalization Form | Storage Engine | Partitioning / Indexing Strategy | Sensitivity Tier |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `customers` | `customer_id` (`UUID`) | 3NF / BCNF | PostgreSQL 18 | Unique `external_ref`, `email`, `phone_e164`, `bvn_sha256`; composite `(country_code, segment, kyc_tier)` | Tier 4 (Restricted PII) |
-| `kyc_records` | `kyc_id` (`UUID`) | 3NF / BCNF | PostgreSQL 18 | Unique `document_ref_hash`; FK index on `customer_id` | Tier 4 (Restricted PII) |
-| `consent_records` | `consent_id` (`UUID`) | 3NF / BCNF | PostgreSQL 18 | Unique `(customer_id, regulation_code, purpose_code)` | Tier 2 (Internal Compliance) |
+| `customers` | `customer_id` (`UUID`) | 3NF / BCNF | PostgreSQL 18 | Unique `external_ref`, `email`, `phone_e164`, `bvn_sha256`; covering index `(segment, kyc_tier, risk_rating DESC) INCLUDE (full_name, country_code)` | Tier 4 (Restricted PII) |
+| `kyc_records` | `kyc_id` (`UUID`) | 3NF / BCNF | PostgreSQL 18 | Unique `document_ref_hash`; FK to `customers(customer_id)` | Tier 4 (Restricted PII) |
+| `consent_records` | `consent_id` (`UUID`) | 3NF / BCNF | PostgreSQL 18 | Append/audit consent history (`regulation_code`, `purpose_code`, `consent_granted`); FK to `customers(customer_id)` | Tier 2 (Internal Compliance) |
 | `accounts` | `account_id` (`UUID`) | 3NF / BCNF | PostgreSQL 18 | Unique `account_number`; Hash Sharded (`accounts_sharded` modulus 4: `p0..p3`) | Tier 3 (Confidential) |
 | `beneficiaries` | `beneficiary_id` (`UUID`) | 3NF / BCNF | PostgreSQL 18 | Unique `(customer_id, bank_code, account_number)` | Tier 3 (Confidential) |
 | `payment_cards` | `card_id` (`UUID`) | 3NF / BCNF | PostgreSQL 18 | Unique `card_token`; `CHECK` on `masked_pan` (`^XXXX-XXXX-XXXX-[0-9]{4}$`) | Tier 4 (PCI-DSS Restricted) |
 | `transactions` | `transaction_id` (`UUID`) | 3NF / BCNF | PostgreSQL 18 | Range Partitioned (`transactions_partitioned` by `created_at`); covering, partial & GIN indexes | Tier 3 (Confidential) |
 | `ledger_entries` | `entry_id` (`UUID`) | 3NF / BCNF | PostgreSQL 18 | Unique `(transaction_id, entry_sequence)`; covering index `(account_id, created_at, entry_sequence) INCLUDE (...)`; immutable trigger | Tier 3 (Confidential) |
 | `transaction_audit_logs` | `log_id` (`BIGINT IDENTITY`) | Append-Only | PostgreSQL 18 | Unique `curr_hash`; SHA-256 hash chain (`prev_hash -> curr_hash`); immutable trigger | Tier 4 (Restricted Audit) |
-| `fraud_alerts` | `alert_id` (`UUID`) | 3NF / BCNF | PostgreSQL 18 | Partial index `pidx_fraud_alerts_unresolved` on `WHERE is_resolved = FALSE` | Tier 2 (Internal Risk) |
+| `fraud_alerts` | `alert_id` (`UUID`) | 3NF / BCNF | PostgreSQL 18 | Partial index `pidx_fraud_alerts_unresolved_critical` on `(severity, risk_score DESC, created_at DESC) WHERE is_resolved = FALSE` | Tier 2 (Internal Risk) |
 | `kyc_verifications` | `_id` (`ObjectId`) | Document Tree | MongoDB 8.0 LTS | `$jsonSchema` validation + AEAD field-level encryption; unique `customer_id` | Tier 4 (Restricted PII) |
-| `device_telemetry_events` | `_id` (`ObjectId`) | Document Tree | MongoDB 8.0 LTS | Compound index `(device_fingerprint, event_timestamp DESC)`; 90-day TTL index (`expireAfterSeconds: 7776000`) | Tier 2 (Internal Telemetry) |
-| `FraudGraph` | `customer_id` / `account_number` | Property Graph | Neo4j 5.26 LTS | Uniqueness constraints on `:Customer`, `:Account`, `:Device`, `:FinancialProduct`; risk score property index | Tier 3 (Confidential) |
+| `device_telemetry_events` | `_id` (`ObjectId`) | Document Tree | MongoDB 8.0 LTS | Compound index `(device_fingerprint, captured_at DESC)`; 90-day TTL index on `captured_at` (`expireAfterSeconds: 7776000`) | Tier 2 (Internal Telemetry) |
+| `FraudGraph` | `customer_id` / `account_number` | Property Graph | Neo4j 5.26 LTS | Uniqueness constraints on `:Customer`, `:Account`, `:Device` (with `:FinancialProduct` catalog nodes); risk score & segment indexes | Tier 3 (Confidential) |
 | `customer_transaction_timeline` | `((account_id, bucket_month), created_at, transaction_id)` | Wide-Column Projection | Apache Cassandra 5.0 | Partitioned by `(account_id, bucket_month)` with `CLUSTERING ORDER BY (created_at DESC, transaction_id ASC)` (read-only CDC view) | Tier 3 (Confidential) |
 | `fx_liquidity_ticks` | `(tick_time, corridor_pair)` | Hypertable | TimescaleDB | Range-chunked hypertable (`create_hypertable`) + continuous aggregate `mv_fx_liquidity_hourly` (`time_bucket`) | Tier 2 (Internal Telemetry) |
-| `silver_transactions` | `reference_code` (`snapshot_id`) | Open Table Format | Apache Iceberg (Apache Polaris) | ACID snapshot isolation, REST catalog RBAC & vended credentials, native Iceberg table branching (`FOR SYSTEM_VERSION AS OF`) + OpenLineage BCBS 239 provenance | Tier 3 (Confidential) |
+| `silver_transactions` | `reference_code` (merge key; Iceberg `snapshot_id` metadata) | Open Table Format | Apache Iceberg (Apache Polaris) | ACID snapshot isolation, REST catalog RBAC & vended credentials, native Iceberg table branching (`FOR SYSTEM_VERSION AS OF`) + OpenLineage BCBS 239 provenance | Tier 3 (Confidential) |

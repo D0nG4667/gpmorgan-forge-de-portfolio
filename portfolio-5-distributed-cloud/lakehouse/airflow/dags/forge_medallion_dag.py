@@ -45,7 +45,7 @@ def forge_medallion_gold_build() -> None:
 
     dbt_build_gold = BashOperator(
         task_id="dbt_build_gold",
-        bash_command=f"dbt build {DBT_FLAGS} --select marts",
+        bash_command=f"dbt build {DBT_FLAGS} --select +marts",
     )
 
     reconcile_gold_to_silver = BashOperator(

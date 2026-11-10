@@ -2,9 +2,9 @@
 
 ## 1. Benchmark Environment & Methodology
 
-- **Database Engine**: PostgreSQL 18 (Alpine Linux container `forge-postgres-primary`) + Python SQLAlchemy 2.1 Analytical Benchmark Engine (`src/gpmorgan_forge/query_optimizer.py`)
+- **Database Engine**: PostgreSQL 18 (Alpine Linux container `forge-postgres-primary`) for `EXPLAIN (ANALYZE, BUFFERS, COSTS, TIMING)` physical execution plans, paired with [`src/gpmorgan_forge/query_optimizer.py`](../src/gpmorgan_forge/query_optimizer.py) (which executes portable SQLAlchemy 2.1 window/rollup queries and verifies index plan selection via `EXPLAIN` / SQLite `EXPLAIN QUERY PLAN` in CI).
 - **Dataset Scale**:
-  - Seed baseline + synthetic benchmark workload: `10,000` customers, `25,000` multi-currency accounts, `250,000` transactions, and `500,000` double-entry `ledger_entries`.
+  - Seed baseline (`seed_data.sql`: 4 accounts, 4 transactions, 8 ledger entries shown in Section 2) + synthetic PostgreSQL benchmark workload (`10,000` customers, `25,000` multi-currency accounts, `250,000` transactions, and `500,000` double-entry `ledger_entries` shown in Sections 3 & 4).
 - **Diagnostic Command**: `EXPLAIN (ANALYZE, BUFFERS, COSTS, TIMING)` executed with warm and cold shared buffers (`shared hit` vs `shared read`).
 
 ---
@@ -13,28 +13,28 @@
 
 ### 2.1 Query 1 Result: Chronological Account Statement & Running Balance (`2000000002`)
 
-| `account_number` | `reference_code` | `transaction_type` | `direction` | `amount` | `balance_before` | `balance_after` | `window_computed_balance` | `balance_drift` |
-| :--- | :--- | :--- | :--- | ---: | ---: | ---: | ---: | ---: |
-| `2000000002` | `FRG-DEP-20261101-0001` | `DEPOSIT` | `CREDIT` | `15000000.0000` | `0.0000` | `15000000.0000` | `15000000.0000` | `0.0000` |
-| `2000000002` | `FRG-TRF-20261102-0003` | `TRANSFER` | `DEBIT` | `1250000.0000` | `15000000.0000` | `13750000.0000` | `13750000.0000` | `0.0000` |
-| `2000000002` | `FRG-TRF-20261103-0004` | `TRANSFER` | `DEBIT` | `1500000.0000` | `13750000.0000` | `12250000.0000` | `12250000.0000` | `0.0000` |
+| `account_number` | `reference_code` | `transaction_type` | `direction` | `amount` | `balance_before` | `balance_after` | `window_computed_balance` | `balance_drift` | `created_at` |
+| :--- | :--- | :--- | :--- | ---: | ---: | ---: | ---: | ---: | :--- |
+| `2000000002` | `FRG-DEP-20261101-0001` | `DEPOSIT` | `CREDIT` | `15000000.0000` | `0.0000` | `15000000.0000` | `15000000.0000` | `0.0000` | `2026-11-01 09:00:00+00` |
+| `2000000002` | `FRG-TRF-20261102-0003` | `TRANSFER` | `DEBIT` | `1250000.0000` | `15000000.0000` | `13750000.0000` | `13750000.0000` | `0.0000` | `2026-11-02 14:30:00+00` |
+| `2000000002` | `FRG-TRF-20261103-0004` | `TRANSFER` | `DEBIT` | `1500000.0000` | `13750000.0000` | `12250000.0000` | `12250000.0000` | `0.0000` | `2026-11-03 11:20:00+00` |
 
 ### 2.2 Query 2 Result: Rolling 24-Hour Outbound Velocity & Limit Utilisation
 
-| `account_number` | `full_name` | `segment` | `reference_code` | `amount` | `tx_count_24h` | `rolling_volume_24h` | `limit_utilisation_pct` |
-| :--- | :--- | :--- | :--- | ---: | ---: | ---: | ---: |
-| `2000000002` | `Adebayo Ogunlesi Ventures Ltd` | `CORPORATE` | `FRG-TRF-20261103-0004` | `1500000.0000` | `2` | `2750000.0000` | `2.75%` |
-| `2000000002` | `Adebayo Ogunlesi Ventures Ltd` | `CORPORATE` | `FRG-TRF-20261102-0003` | `1250000.0000` | `1` | `1250000.0000` | `1.25%` |
+| `account_number` | `full_name` | `segment` | `reference_code` | `amount` | `tx_count_24h` | `rolling_volume_24h` | `limit_utilisation_pct` | `created_at` |
+| :--- | :--- | :--- | :--- | ---: | ---: | ---: | ---: | :--- |
+| `2000000002` | `Adebayo Ogunlesi Ventures Ltd` | `CORPORATE` | `FRG-TRF-20261103-0004` | `1500000.0000` | `2` | `2750000.0000` | `2.75%` | `2026-11-03 11:20:00+00` |
+| `2000000002` | `Adebayo Ogunlesi Ventures Ltd` | `CORPORATE` | `FRG-TRF-20261102-0003` | `1250000.0000` | `1` | `1250000.0000` | `1.25%` | `2026-11-02 14:30:00+00` |
 
 ### 2.3 Query 3 Result: Global Double-Entry Trial Balance & Account Reconciliation
 
-| `account_number` | `account_name` | `account_type` | `live_account_balance` | `total_credits` | `total_debits` | `ledger_net_balance` | `reconciliation_discrepancy` |
-| :--- | :--- | :--- | ---: | ---: | ---: | ---: | ---: |
-| `1000000001` | `GPMorgan NGN Central Settlement GL` | `SETTLEMENT_GL` | `-16500000.0000` | `0.0000` | `16500000.0000` | `-16500000.0000` | `0.0000` |
-| `2000000002` | `Adebayo Ogunlesi Ventures Corporate Operating` | `CHECKING` | `12250000.0000` | `15000000.0000` | `2750000.0000` | `12250000.0000` | `0.0000` |
-| `2000000003` | `Chidinma Okafor Primary Checking` | `CHECKING` | `2750000.0000` | `2750000.0000` | `0.0000` | `2750000.0000` | `0.0000` |
-| `2000000004` | `Ibrahim Danjuma SME Savings` | `SAVINGS` | `1500000.0000` | `1500000.0000` | `0.0000` | `1500000.0000` | `0.0000` |
-| **TOTAL** | **All Accounts (Zero-Sum Invariant)** | N/A | **`0.0000`** | **`19250000.0000`** | **`19250000.0000`** | **`0.0000`** | **`0.0000`** |
+| `account_number` | `account_name` | `account_type` | `currency` | `live_account_balance` | `total_credits` | `total_debits` | `ledger_net_balance` | `reconciliation_discrepancy` |
+| :--- | :--- | :--- | :--- | ---: | ---: | ---: | ---: | ---: |
+| `1000000001` | `GPMorgan NGN Central Settlement GL` | `SETTLEMENT_GL` | `NGN` | `-16500000.0000` | `0.0000` | `16500000.0000` | `-16500000.0000` | `0.0000` |
+| `2000000002` | `Adebayo Ogunlesi Ventures Corporate Operating` | `CHECKING` | `NGN` | `12250000.0000` | `15000000.0000` | `2750000.0000` | `12250000.0000` | `0.0000` |
+| `2000000003` | `Chidinma Okafor Primary Checking` | `CHECKING` | `NGN` | `2750000.0000` | `2750000.0000` | `0.0000` | `2750000.0000` | `0.0000` |
+| `2000000004` | `Ibrahim Danjuma SME Savings` | `SAVINGS` | `NGN` | `1500000.0000` | `1500000.0000` | `0.0000` | `1500000.0000` | `0.0000` |
+| **TOTAL** | **All Accounts (Zero-Sum Invariant)** | N/A | `NGN` | **`0.0000`** | **`19250000.0000`** | **`19250000.0000`** | **`0.0000`** | **`0.0000`** |
 
 ---
 
@@ -103,13 +103,13 @@ Execution Time: 0.120 ms
 
 ## 4. Quantitative Performance Summary Table
 
-| Workload / Query | Unoptimised Plan | Optimised Plan | Latency (Before) | Latency (After) | Speedup Factor | Buffer Blocks Read |
+| Benchmark ID (`queries.sql` Mapping) | Unoptimised Plan | Optimised Plan | Latency (Before) | Latency (After) | Speedup Factor | Buffer Blocks Read |
 | :--- | :--- | :--- | ---: | ---: | ---: | :--- |
-| **Q1: Account Statement & Running Balance** | `Seq Scan` + `Sort` | `Index Only Scan` (Covering) | `68.71 ms` | `0.44 ms` | **156.2x** | `6,434` $\rightarrow$ `14` |
-| **Q2: 24h Outbound Velocity AML Window** | `Seq Scan` + `Sort` | `Index Only Scan` (`idx_transactions_source_created_covering`) | `54.18 ms` | `0.82 ms` | **66.1x** | `4,890` $\rightarrow$ `28` |
-| **Q3: Active Settlement Pipeline Poll** | `Seq Scan` (99.98% filtered) | `Index Scan` (`pidx_transactions_active_pipeline`) | `34.92 ms` | `0.12 ms` | **291.0x** | `4,100` $\rightarrow$ `6` |
-| **Q4: JSONB Webhook Channel Filter** | `Seq Scan` + JSON parse | `Bitmap Index Scan` (`gin_transactions_metadata_jsonb`) | `41.60 ms` | `0.65 ms` | **64.0x** | `4,100` $\rightarrow$ `19` |
-| **Q6: Daily Corridor Settlement Rollup** | Full Aggregation Scan | `Materialised View` (`mv_daily_corridor_settlement`) | `112.40 ms` | `0.19 ms` | **591.6x** | `9,250` $\rightarrow$ `4` |
+| **P1 (`Q1`): Account Statement & Running Balance** | `Seq Scan` + `Sort` | `Index Only Scan` (`idx_ledger_entries_account_created_covering`) | `68.71 ms` | `0.44 ms` | **156.2x** | `6,434` $\rightarrow$ `14` |
+| **P2 (`Q2`): 24h Outbound Velocity AML Window** | `Seq Scan` + `Sort` | `Index Only Scan` (`idx_transactions_source_created_covering`) | `54.18 ms` | `0.82 ms` | **66.1x** | `4,890` $\rightarrow$ `28` |
+| **P3 (Partial Index Micro-Benchmark): Active Pipeline Poll** | `Seq Scan` (99.98% filtered) | `Index Scan` (`pidx_transactions_active_pipeline`) | `34.92 ms` | `0.12 ms` | **291.0x** | `4,100` $\rightarrow$ `6` |
+| **P4 (GIN Index Micro-Benchmark): JSONB Webhook Filter** | `Seq Scan` + JSON parse | `Bitmap Index Scan` (`gin_transactions_metadata_jsonb`) | `41.60 ms` | `0.65 ms` | **64.0x** | `4,100` $\rightarrow$ `19` |
+| **P5 (`Q6`): Daily Corridor Settlement Rollup** | Full Aggregation Scan | `Materialised View` (`mv_daily_corridor_settlement` + `uidx_mv_daily_corridor_settlement`) | `112.40 ms` | `0.19 ms` | **591.6x** | `9,250` $\rightarrow$ `4` |
 
 ---
 

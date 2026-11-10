@@ -20,7 +20,7 @@ Digital banking platforms frequently fail audit scrutiny when account balances a
 ## Decision
 
 1. **Strict 3NF/BCNF Relational Core (10 Normalized Tables in PostgreSQL 18)**: All customer (`customers`, `kyc_records`, `consent_records`), account (`accounts`, `beneficiaries`, `payment_cards`), transaction (`transactions`, `ledger_entries`), audit (`transaction_audit_logs`), and risk (`fraud_alerts`) entities are normalized to Third Normal Form (3NF) and Boyce-Codd Normal Form (BCNF), ensuring every non-trivial functional dependency $X \to Y$ has a superkey determinant $X$.
-2. **Exact Base-10 Monetary Arithmetic**: Every monetary column (`balance`, `available_balance`, `daily_transfer_limit`, `amount`, `fee_amount`, `balance_before`, `balance_after`) uses `NUMERIC(19, 4)` in SQL and `decimal.Decimal` with `ROUND_HALF_EVEN` (banker's rounding) in Python 3.15.
+2. **Exact Base-10 Monetary Arithmetic**: Every monetary column (`balance`, `available_balance`, `daily_transfer_limit`, `spending_limit`, `amount`, `fee_amount`, `balance_before`, `balance_after`) uses `NUMERIC(19, 4)` in SQL and `decimal.Decimal` with `ROUND_HALF_EVEN` (banker's rounding) in Python 3.15.
 3. **Double-Entry Journal Invariant**: Every financial movement (`transfer_funds`, `process_deposit`, `process_withdrawal`, `reverse_failed_transaction`) creates one parent row in `transactions` and two balanced child legs in `ledger_entries`: one `DEBIT` on the source account (`entry_sequence = 1`) and one `CREDIT` on the destination account (`entry_sequence = 2`), checked by `chk_ledger_entries_balance_math`. At the end of every transaction, the global invariant holds:
    $$\sum \text{DEBIT} - \sum \text{CREDIT} = 0.0000$$
 4. **Trigger-Enforced Append-Only Ledger & SHA-256 Hash-Chained Audit Trail**: Both `ledger_entries` (`trg_immutable_ledger_entries`) and `transaction_audit_logs` (`trg_immutable_audit_logs`) are protected by `BEFORE UPDATE OR DELETE` triggers (`fn_prevent_immutable_mutation()`) and verified by `audit_account_balances()`.
@@ -43,4 +43,4 @@ flowchart LR
 ## Consequences
 
 - **Positive**: Complete historical reconstructability of any account balance at any point in time; zero floating-point rounding drift; cryptographic hash-chain tamper evidence; immediate compliance with CBN and external statutory audit standards.
-- **Negative / Trade-offs**: Each transfer writes 1 transaction header + 2 ledger entries + 1 audit log + updates 2 account rows (mitigated via covering B-Tree indexes and synchronous WAL group commit).
+- **Negative / Trade-offs**: Each transfer writes 1 transaction header + 2 ledger entries + 1 audit log + updates 2 account rows (plus 1 conditional `fraud_alerts` row when `amount >= 10,000,000.0000` NGN; mitigated via covering B-Tree indexes and synchronous WAL group commit).

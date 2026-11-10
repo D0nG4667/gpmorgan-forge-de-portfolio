@@ -27,7 +27,7 @@ flowchart TD
 | :--- | :--- | :--- | :--- | :--- |
 | **Relational & Distributed SQL (OLTP)** | **PostgreSQL 18 + CockroachDB** | Normalised 3NF/BCNF tables with rows, columns & Raft ranges | Double-entry `ledger_entries`, `accounts`, `transactions`, ACID balance mutations, and Tier-2 durable `uq_transactions_idempotency_key`. | Ideal for tabular ACID operations, but suffers from $O(n^2)$ join explosion on deep recursive graph traversals. |
 | **Graph Database** | **Neo4j 5.26 LTS** *(Cloud: Neo4j Aura / Amazon Neptune)* | **Nodes** (entities), **Edges** (relationships), and **Properties** (key-value attributes) | Circular money-laundering ring detection (`A -> B -> C -> A`), shared-device mule account clustering, and B2B product recommendations. | Finding 3-to-5 hop cycles in SQL requires expensive multi-way self-JOINs across millions of rows; Neo4j traverses edges in constant time via **index-free adjacency**. |
-| **Document Store** | **MongoDB 8.0 LTS** | Hierarchical BSON documents with `$jsonSchema` validation | Multi-jurisdiction KYC payloads (`NG` BVN/NIN vs. `GB` Passport vs. Corporate CAC filings), mobile device telemetry, and ISO 20022 webhook logs. | Avoids sparse tables with dozens of `NULL` columns or rigid `ALTER TABLE` migrations when onboarding new country KYC providers. |
+| **Document Store** | **MongoDB 8.0 LTS** | Hierarchical BSON documents with `$jsonSchema` validation | Multi-jurisdiction KYC payloads (`kyc_verifications`: `NG` BVN/NIN vs. `GB` Passport vs. Corporate CAC filings) and 90-day mobile/web session telemetry (`device_telemetry_events`). | Avoids sparse tables with dozens of `NULL` columns or rigid `ALTER TABLE` migrations when onboarding new country KYC providers. |
 | **Key-Value Store** | **Redis 8.0 / Valkey** | In-memory key-value strings, hashes (`HSET`), and sorted sets (`ZSET`) with TTL | Tier-1 atomic payment idempotency locks (`SET ... NX EX`), 60-second sliding-window API rate limiting, and read-through balance caching. | Disk-backed relational tables incur unnecessary WAL I/O for ephemeral locks and sub-millisecond rate-limiting counters that expire after 60 seconds. |
 | **Wide-Column Store** | **Apache Cassandra 5.0** | Partitioned wide rows keyed by `((account_id, bucket_month), created_at DESC, transaction_id ASC)` | **Strictly read-only, append-only customer transaction timeline projections** fed asynchronously via Kafka CDC (never used for mutable balances). | Provides single-partition $O(1)$ reverse-chronological statement slices and linear multi-DC write scaling without touching the OLTP primary. |
 | **Time-Series Database** | **TimescaleDB** *(PostgreSQL Hypertables)* | Time-chunked hypertables (`create_hypertable`) and continuous aggregates (`time_bucket`) | High-frequency FX rate ticks (`USD/NGN`, `GBP/NGN`) and real-time hourly OHLCV liquidity candlesticks. | Automates time-chunk partitioning, columnar compression, and incremental continuous view refreshes over high-velocity tick streams. |
@@ -40,7 +40,7 @@ flowchart TD
 
 A graph database represents relationship-rich financial networks using three foundational primitives:
 
-1. **Nodes (Entities)**: `:Customer`, `:Account`, `:Device`, `:IPAddress`, `:FinancialProduct`.
+1. **Nodes (Entities)**: `:Customer`, `:Account`, `:Device`, `:FinancialProduct`.
 2. **Edges (Directed, Typed Relationships)**:
    - `(:Customer)-[:OWNS_ACCOUNT]->(:Account)`
    - `(:Account)-[:TRANSFERRED_TO {tx_ref, amount, timestamp}]->(:Account)`
@@ -112,7 +112,7 @@ xychart-beta
    - **Bounded Traversal Depth & Specific Edge Types**: Always restrict path length (`[:TRANSFERRED_TO*2..5]`) rather than untyped or unbounded (`[*1..10]`) patterns.
    - **Sharding, Caching & Parallel Traversal**: Partition graphs by regional clearing corridor, cache hot subgraphs in memory, and execute independent AML rule traversals concurrently.
 3. **Security, Compliance & AI/ML Integration in Graph Databases**:
-   - **Subgraph RBAC**: Restrict compliance analysts to regional subgraphs and mask customer PII on nodes.
+   - **Subgraph Access Governance**: Enforce jurisdiction-scoped subgraph access via `AccessControlEngine` in local `neo4j:5.26-community` deployments (and native role-based subgraph privileges on managed Neo4j Aura cloud tiers) while masking customer PII on nodes.
    - **NDPA 2023 & GDPR Compliance**: Log all Cypher queries in audit logs and anonymise customer node properties upon erasure requests.
    - **Graph Neural Networks (GNNs) & Knowledge Graphs**: Export Neo4j subgraphs to PyTorch Geometric / TensorFlow to train GNN node-classification models that predict mule-account probability before a ring completes its first loop.
 
@@ -123,8 +123,8 @@ xychart-beta
 Flexible schemas in NoSQL document databases introduce the risk of accidental sensitive data exposure if new dynamic fields bypass access controls. GPMorgan Forge mitigates this in [`mongodb_document_model.js`](mongodb_document_model.js) and [`src/gpmorgan_forge/nosql_models.py`](../src/gpmorgan_forge/nosql_models.py) via:
 
 1. **Strict `$jsonSchema` Validation**: Rejects any KYC or telemetry document missing required security metadata.
-2. **Client-Side Field-Level Encryption (CSFLE / AEAD)**: Sensitive identity fields (`bvn_or_national_id_cipher`, `tax_id_cipher`) are encrypted with `AEAD_AES_256_GCM` using a KMS-managed key (`kms-ng-cbn-key-2026-01`) *before* being written to MongoDB (`ENCv2:...`).
-3. **Query-Level Access Control & TTL Expiry**: Device telemetry documents automatically expire after 90 days via a TTL index (`expireAfterSeconds: 7776000`), enforcing **NDPA 2023 Data Minimisation**.
+2. **Application-Layer Field-Level Encryption (CSFLE / AEAD)**: Sensitive identity fields (`bvn_or_national_id_cipher`, `tax_id_cipher`) in `kyc_verifications` are encrypted with `AEAD_AES_256_GCM` (`ENCv2:<key_id>:<base64url>`) using a 256-bit key derived via `HKDF-SHA256` from `FORGE_KMS_MASTER_KEY` and KMS key ID `kms-ng-cbn-key-2026-01` *before* being written to MongoDB.
+3. **Query-Level Access Control & TTL Expiry**: Device telemetry documents in `device_telemetry_events` automatically expire after 90 days via a TTL index on `captured_at` (`expireAfterSeconds: 7776000`), enforcing **NDPA 2023 Data Minimisation**.
 
 ---
 

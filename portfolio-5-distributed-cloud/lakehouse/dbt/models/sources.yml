@@ -1,0 +1,19 @@
+version: 2
+
+sources:
+  - name: forge_lakehouse
+    description: Silver Apache Iceberg tables written by the Spark Structured Streaming job.
+    database: iceberg
+    schema: forge_lakehouse
+    freshness:
+      warn_after: { count: 2, period: hour }
+      error_after: { count: 6, period: hour }
+    loaded_at_field: ingested_at
+    tables:
+      - name: silver_transactions
+        description: Validated, de-duplicated (idempotent MERGE on reference_code) CDC transactions.
+        columns:
+          - name: reference_code
+            data_tests:
+              - not_null
+              - unique

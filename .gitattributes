@@ -1,0 +1,10 @@
+* text=auto
+*.sh text eol=lf
+*.sql text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+*.properties text eol=lf
+*.cql text eol=lf
+*.cypher text eol=lf
+*.conf text eol=lf

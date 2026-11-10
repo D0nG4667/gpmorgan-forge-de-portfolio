@@ -1,0 +1,27 @@
+version: 2
+
+models:
+  - name: dim_corridor
+    description: Settlement corridor dimension (one row per currency corridor).
+    columns:
+      - name: corridor_key
+        data_tests:
+          - not_null
+          - unique
+
+  - name: fact_corridor_settlement
+    description: Gold star-schema fact; one row per corridor with settled volume and fraud flags.
+    columns:
+      - name: corridor_key
+        data_tests:
+          - not_null
+          - unique
+          - relationships:
+              to: ref('dim_corridor')
+              field: corridor_key
+      - name: transaction_count
+        data_tests:
+          - not_null
+      - name: total_settled_amount
+        data_tests:
+          - not_null

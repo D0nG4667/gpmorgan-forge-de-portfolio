@@ -105,8 +105,8 @@ erDiagram
     TRANSACTIONS ||--o| TRANSACTIONS : "reverses (parent_transaction_id)"
     TRANSACTIONS ||--|{ LEDGER_ENTRIES : "posts balanced legs"
     ACCOUNTS ||--o{ LEDGER_ENTRIES : "records movement"
-    TRANSACTIONS ||--o{ TRANSACTION_AUDIT_LOGS : "emits hash-chained audit"
-    ACCOUNTS ||--o{ TRANSACTION_AUDIT_LOGS : "audits state"
+    TRANSACTIONS |o--o{ TRANSACTION_AUDIT_LOGS : "emits hash-chained audit"
+    ACCOUNTS |o--o{ TRANSACTION_AUDIT_LOGS : "audits state"
     TRANSACTIONS ||--o{ FRAUD_ALERTS : "triggers"
     ACCOUNTS ||--o{ FRAUD_ALERTS : "flags"
 ```

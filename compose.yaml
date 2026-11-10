@@ -4,6 +4,7 @@
 # Profiles:
 #   - core:        postgres-primary + redis (lightweight OLTP & idempotency)
 #   - nosql:       mongodb + neo4j + redis + cassandra + timescaledb
+#   - graph:       neo4j (standalone AML graph inspection)
 #   - distributed: postgres-replica + cockroachdb + timescaledb
 #   - lakehouse:   kafka + debezium-connect + flink + spark-streaming + polaris-catalog +
 #                  trino + airflow (dbt) + otel-collector
@@ -565,6 +566,8 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
       FLINK_REST_URI: ${FLINK_REST_URI:-http://flink:8081}
       KMS_MASTER_KEY_ID: ${KMS_MASTER_KEY_ID:-kms-ng-cbn-key-2026-01}
+      FORGE_KMS_MASTER_KEY: ${FORGE_KMS_MASTER_KEY:-}
+      FORGE_ZKP_ISSUER_SEED: ${FORGE_ZKP_ISSUER_SEED:-}
       POLARIS_CATALOG_URI: ${POLARIS_CATALOG_URI:-http://polaris-catalog:8181/api/catalog}
       POLARIS_DEFAULT_BRANCH: ${POLARIS_DEFAULT_BRANCH:-main}
       TRINO_COORDINATOR_URI: ${TRINO_COORDINATOR_URI:-http://trino:8080}

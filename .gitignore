@@ -219,3 +219,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Generated development TLS material
+portfolio-5-distributed-cloud/infra/tls/
+

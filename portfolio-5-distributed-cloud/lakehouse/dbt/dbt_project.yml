@@ -1,0 +1,15 @@
+name: forge_lakehouse
+version: "1.0.0"
+config-version: 2
+profile: forge_lakehouse
+
+model-paths: ["models"]
+test-paths: ["tests"]
+
+models:
+  forge_lakehouse:
+    staging:
+      +materialized: view
+    marts:
+      +materialized: table
+      +on_table_exists: replace

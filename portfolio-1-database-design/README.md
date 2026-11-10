@@ -20,26 +20,26 @@ Modern financial technology platforms require strict **ACID transactional guaran
 
 | User Persona / Role | Access Pattern | Database Privileges & Scope |
 | :--- | :--- | :--- |
-| **Retail, SME & Corporate Customers** (`forge_customer`) | Check balances, fund accounts, transfer funds, manage beneficiaries & cards, manage privacy consents. | Row-Level Security (RLS) restricted strictly to their own `customer_id` and `account_id` records. |
+| **Retail, SME & Corporate Customers** (`forge_customer`) | Check balances, fund accounts, transfer funds, manage beneficiaries & cards, manage privacy consents. | Row-Level Security (RLS) on `customers` and `accounts` restricted strictly to their own `customer_id` records (`app.current_customer_id`). |
 | **Core Payment & Ledger Engine** (`forge_core_service`) | Execute atomic transfers, deposits, withdrawals, contra-entry reversals, and append ledger/audit entries. | `SELECT`, `INSERT`, `UPDATE` on operational tables; append-only (`INSERT`) on `ledger_entries` and `transaction_audit_logs`. |
-| **Compliance Officers & DPOs** (`forge_compliance_dpo`) | Review KYC verification records, investigate AML fraud alerts, audit ledger integrity, process NDPA/GDPR erasure requests. | Read access to KYC, consent, audit logs, and Neo4j fraud graphs; execute permission on `anonymise_customer_pii`. |
-| **Financial & BI Analysts** (`forge_analyst`) | Run aggregate liquidity, cohort, and corridor volume analytics on read replicas and materialised views. | Read-only access to **dynamically masked views** (`v_masked_customers`, `v_masked_payment_cards`) and analytical materialised views. |
+| **Compliance Officers & DPOs** (`forge_compliance_dpo`) | Review KYC verification records, investigate AML fraud alerts, audit ledger integrity, process NDPA/GDPR erasure requests. | Jurisdiction-scoped RLS (`app.actor_country`) on `customers`, read access across audit/fraud tables, and authorised DPO workflow for `anonymise_customer_pii` (Portfolio 5). |
+| **Financial & BI Analysts** (`forge_analyst`) | Run aggregate liquidity, cohort, and corridor volume analytics on read replicas and masked views. | Raw PII tables (`customers`, `kyc_records`, `payment_cards`) revoked; SQL access granted to **dynamically masked views** (`v_masked_customers`, `v_masked_payment_cards`) alongside analytical rollups. |
 | **Database Administrators & SREs** (`forge_admin`) | Schema migrations, declarative partition management, index tuning, backup/recovery, replication monitoring. | Full DDL and operational supervision with every action recorded in immutable audit logs. |
 
 ### 1.4 Major Data Stored (Nature of Database)
 
 1. **Customers & KYC Identity Profiles**: Customer demographics, segment classification (`RETAIL`, `SME`, `CORPORATE`, `INSTITUTIONAL`), KYC tiers (`TIER_1` to `TIER_3`), SHA-256 hashed BVN/NIN identifiers, country residency tags, and verification document metadata (`kyc_records`).
 2. **Regulatory Privacy Consents**: Granular opt-in/opt-out tracking (`consent_records`) per regulation (`NDPA_2023`, `GDPR`, `CBN_AML`, `PCI_DSS`) with timestamps and IP provenance.
-3. **Accounts & Multi-Currency Wallets**: Customer checking/savings/escrow accounts and institutional General Ledger (`SETTLEMENT_GL`) accounts, storing `NUMERIC(19, 4)` balances, daily limits, status flags, and optimistic concurrency `version` counters.
+3. **Accounts & Multi-Currency Wallets**: Customer checking/savings/escrow/treasury accounts and institutional General Ledger (`SETTLEMENT_GL`) accounts, storing `NUMERIC(19, 4)` balances, daily limits, status flags, and optimistic concurrency `version` counters.
 4. **Payment Instruments & Beneficiaries**: Tokenised payment cards (`payment_cards`) with PCI-compliant masked PANs (`XXXX-XXXX-XXXX-1234`) and whitelisted transfer counterparties (`beneficiaries`).
 5. **Transactions (Transfers, Deposits, Withdrawals, Reversals)**: Payment orders (`transactions`) tracking `idempotency_key`, `reference_code`, source and destination accounts, amounts, fees, FX rates, lifecycle status (`PENDING`, `SETTLED`, `FAILED`, `REVERSED`, `FLAGGED`), and `parent_transaction_id` for compensating reversals.
 6. **Immutable Double-Entry Ledger**: Atomic accounting legs (`ledger_entries`) recording `DEBIT` and `CREDIT` movements with `balance_before` and `balance_after` snapshots.
-7. **Cryptographic Hash-Chained Audit Logs**: Tamper-evident event logs (`transaction_audit_logs`) chaining each record via `curr_hash = SHA256(prev_hash || payload)`.
+7. **Cryptographic Hash-Chained Audit Logs**: Tamper-evident event logs (`transaction_audit_logs`) chaining each record via canonical sorted-key JSON hashing (`build_audit_hash`: `SHA256(canonical_json(prev_hash, event_type, actor_id, transaction_id, account_id, new_state))`).
 8. **Real-Time Fraud & AML Alerts**: Risk rules and graph anomaly detections (`fraud_alerts`) scored by severity (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`).
 
 ### 1.5 Key Database Operations Supported
 
-- **Customer Onboarding, KYC Tiering & Privacy Consent Recording** (`onboard_customer`, `verify_kyc_document`, `record_consent`, `anonymise_customer_pii`)
+- **Customer Onboarding, KYC Tiering & Privacy Consent Recording** (`onboard_customer`, `verify_kyc_document`, `record_consent` in `operations.py`; paired with Portfolio 5's `anonymise_customer_pii` erasure procedure)
 - **Account Provisioning & Lifecycle Governance** (`create_account`, `set_account_status`, `issue_payment_card`, `whitelist_beneficiary`, limit enforcement)
 - **Deposit & Funding Settlement** (`process_deposit` from Settlement GL to Customer Account)
 - **Withdrawal & Payout Processing** (`process_withdrawal` from Customer Account to Settlement GL)
@@ -67,8 +67,8 @@ erDiagram
     TRANSACTIONS ||--o| TRANSACTIONS : "reverses (parent_transaction_id)"
     TRANSACTIONS ||--|{ LEDGER_ENTRIES : "posts balanced legs"
     ACCOUNTS ||--o{ LEDGER_ENTRIES : "records movement"
-    TRANSACTIONS ||--o{ TRANSACTION_AUDIT_LOGS : "emits hash-chained audit"
-    ACCOUNTS ||--o{ TRANSACTION_AUDIT_LOGS : "audits state"
+    TRANSACTIONS |o--o{ TRANSACTION_AUDIT_LOGS : "emits hash-chained audit"
+    ACCOUNTS |o--o{ TRANSACTION_AUDIT_LOGS : "audits state"
     TRANSACTIONS ||--o{ FRAUD_ALERTS : "triggers"
     ACCOUNTS ||--o{ FRAUD_ALERTS : "flags"
 
@@ -85,6 +85,7 @@ erDiagram
         numeric risk_rating
         boolean is_anonymised
         timestamptz created_at
+        timestamptz updated_at
     }
 
     KYC_RECORDS {
@@ -123,6 +124,7 @@ erDiagram
         account_status status
         integer version
         timestamptz created_at
+        timestamptz updated_at
     }
 
     BENEFICIARIES {
@@ -133,6 +135,7 @@ erDiagram
         varchar beneficiary_name
         currency_code currency
         boolean is_whitelisted
+        timestamptz created_at
     }
 
     PAYMENT_CARDS {
@@ -145,6 +148,7 @@ erDiagram
         smallint expiry_year
         numeric spending_limit
         varchar status
+        timestamptz created_at
     }
 
     TRANSACTIONS {
@@ -162,6 +166,7 @@ erDiagram
         uuid parent_transaction_id FK
         varchar channel
         varchar narration
+        varchar failure_reason
         jsonb metadata_json
         timestamptz created_at
         timestamptz settled_at
@@ -187,6 +192,7 @@ erDiagram
         varchar actor_id
         varchar actor_role
         varchar event_type
+        varchar ip_address
         jsonb previous_state
         jsonb new_state
         char prev_hash
@@ -203,7 +209,9 @@ erDiagram
         numeric risk_score
         varchar details
         boolean is_resolved
+        varchar resolved_by
         timestamptz created_at
+        timestamptz resolved_at
     }
 ```
 
@@ -213,11 +221,14 @@ erDiagram
 
 ### 3.1 Key Strategy (Surrogate vs. Natural Keys)
 
-- **Surrogate Primary Keys (`UUID`)**: All core entities (`customers`, `accounts`, `transactions`, `ledger_entries`, `kyc_records`, `consent_records`, `payment_cards`, `fraud_alerts`) use 128-bit UUIDs (`gen_random_uuid()`) as primary keys. This prevents enumeration attacks on public APIs and enables conflict-free distributed shard generation in Portfolio 5.
+- **Surrogate Primary Keys (`UUID`)**: All nine operational entities (`customers`, `kyc_records`, `consent_records`, `accounts`, `beneficiaries`, `payment_cards`, `transactions`, `ledger_entries`, `fraud_alerts`) use 128-bit UUIDs (`gen_random_uuid()`) as primary keys. This prevents enumeration attacks on public APIs and enables conflict-free distributed shard generation in Portfolio 5.
 - **Monotonic Identity Key (`BIGINT GENERATED ALWAYS AS IDENTITY`)**: Used on `transaction_audit_logs(log_id)` to enforce a strict total ordering for cryptographic hash-chain verification.
 - **Natural / Business Unique Keys (`UNIQUE`)**:
   - `customers(external_ref)`, `customers(email)`, `customers(phone_e164)`, `customers(bvn_sha256)`
+  - `kyc_records(document_ref_hash)`
   - `accounts(account_number)` (NUBAN 10-digit standard enforced via regex `^[0-9]{10}$`)
+  - `beneficiaries(customer_id, bank_code, account_number)`
+  - `payment_cards(card_token)`
   - `transactions(idempotency_key)` and `transactions(reference_code)`
   - `ledger_entries(transaction_id, entry_sequence)`
   - `transaction_audit_logs(curr_hash)`
@@ -228,7 +239,7 @@ erDiagram
 | :--- | :--- | :--- |
 | `chk_accounts_non_negative_customer_balance` | `accounts` | Ensures retail/corporate accounts never fall below `0.0000` (`balance >= 0 AND available_balance >= 0`), while permitting `SETTLEMENT_GL` accounts to hold net debit positions. |
 | `chk_transactions_distinct_accounts` | `transactions` | Prevents self-transfers (`source_account_id <> destination_account_id`). |
-| `chk_transactions_positive_amount` | `transactions` | Enforces strictly positive transaction amounts (`amount > 0`) and non-negative fees (`fee_amount >= 0`). |
+| `chk_transactions_positive_amount` | `transactions` | Enforces strictly positive transaction amounts (`amount > 0`), non-negative fees (`fee_amount >= 0`), and positive FX conversion rates (`exchange_rate > 0`). |
 | `chk_ledger_entries_balance_math` | `ledger_entries` | Mathematically verifies every ledger leg: for `DEBIT`, `balance_after = balance_before - amount`; for `CREDIT`, `balance_after = balance_before + amount`. |
 | `chk_payment_cards_masked_pan` | `payment_cards` | Enforces PCI-DSS v4.0 PAN masking format (`^XXXX-XXXX-XXXX-[0-9]{4}$`), preventing accidental storage of cleartext 16-digit card numbers. |
 | `trg_immutable_ledger_entries` | `ledger_entries` | Rejects `UPDATE` and `DELETE` statements on `ledger_entries` to guarantee an immutable financial ledger. |
@@ -284,7 +295,7 @@ $$\text{UNF\_Record}(\underline{\text{account\_no}}, \text{cust\_name}, \text{cu
 **Rule**: For every non-trivial functional dependency $X \rightarrow Y$, the determinant $X$ must be a **superkey**.
 
 - Across all 10 tables in `schema.sql`, every functional dependency has a candidate key on its left-hand side:
-  - In `customers`: $\text{customer\_id} \rightarrow \text{All}$, $\text{external\_ref} \rightarrow \text{All}$, $\text{email} \rightarrow \text{All}$, $\text{bvn\_sha256} \rightarrow \text{All}$ (all 4 determinants are declared `UNIQUE NOT NULL` candidate keys).
+  - In `customers`: $\text{customer\_id} \rightarrow \text{All}$, $\text{external\_ref} \rightarrow \text{All}$, $\text{email} \rightarrow \text{All}$, $\text{phone\_e164} \rightarrow \text{All}$, $\text{bvn\_sha256} \rightarrow \text{All}$ (all 5 determinants are declared `UNIQUE NOT NULL` candidate keys).
   - In `accounts`: $\text{account\_id} \rightarrow \text{All}$ and $\text{account\_number} \rightarrow \text{All}$ (both are candidate keys).
   - In `transactions`: $\text{transaction\_id} \rightarrow \text{All}$, $\text{idempotency\_key} \rightarrow \text{All}$, $\text{reference\_code} \rightarrow \text{All}$ (all 3 are candidate keys).
 - **Controlled Caching Note (ADR-0001)**: `accounts.balance` is maintained atomically in the same ACID transaction as `ledger_entries.balance_after`. This provides $O(1)$ point-lookup latency during high-frequency authorization while `audit_account_balances()` continuously verifies $\text{accounts.balance} \equiv \sum (\text{Credits} - \text{Debits})$.

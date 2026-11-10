@@ -43,10 +43,10 @@ Captured live from `forge-postgres-primary` and `forge-postgres-replica` (`postg
 Executed via `DistributedClusterRouter` in [`src/gpmorgan_forge/distributed_privacy.py`](../src/gpmorgan_forge/distributed_privacy.py):
 
 ```text
-[SHARD ROUTER ] Modulus=4 | Account=2000000002 -> Shard=accounts_shard_p2
-[SHARD ROUTER ] Modulus=4 | Account=2000000003 -> Shard=accounts_shard_p3
-[SHARD ROUTER ] Modulus=4 | Account=2000000004 -> Shard=accounts_shard_p0
-[REPLICA ROUTE] Write (transfer_funds) -> Routed to postgres-primary (synchronous WAL commit)
+[SHARD ROUTER ] Modulus=4 | Account=2000000002 -> Shard=accounts_shard_p3
+[SHARD ROUTER ] Modulus=4 | Account=2000000003 -> Shard=accounts_shard_p1
+[SHARD ROUTER ] Modulus=4 | Account=2000000004 -> Shard=accounts_shard_p2
+[REPLICA ROUTE] Write (transfer_funds) -> Routed to postgres-primary (primary WAL commit; async streaming replica in Compose, sync quorum in multi-AZ HA)
 [MULTI-REGION ] Cross-Region Write (global_corridor_settlements) -> Routed to cockroachdb-multi-region (RAFT_SERIALIZABLE_ZERO_RPO)
 [REPLICA ROUTE] Read (BI analytics, lag=15ms <= max_lag=100ms) -> Routed to postgres-replica
 [REPLICA ROUTE] Read (Stale replica lag=450ms > max_lag=100ms) -> Failover to postgres-primary (Read-Your-Writes consistency!)
@@ -72,8 +72,8 @@ Executed via `DistributedClusterRouter` in [`src/gpmorgan_forge/distributed_priv
 
 ```text
 [RBAC & RLS   ] Role=forge_customer (customer_id=CUST-NG-00103) querying Account 2000000002 (owned by CUST-NG-00102) -> ACCESS_DENIED (RLS filtered)
-[DATA MASKING ] Role=forge_analyst querying Customer CUST-NG-00103:
-                full_name='Ch***' | email='ch***@example.ng' | phone='+234******3303' | card_pan='XXXX-XXXX-XXXX-4821'
+[DATA MASKING ] Role=forge_analyst querying v_masked_customers & v_masked_payment_cards (CUST-NG-00103):
+                masked_name='Ch***' | masked_email='ch***@example.ng' | masked_phone='+234******3303' | masked_pan='XXXX-XXXX-XXXX-4821'
 [NDPA ERASURE ] Executed anonymise_customer_pii(CUST-NG-00104):
                 is_anonymised=True | full_name='REDACTED_8a4f91c2b0e1' | email='8a4f91c2b0e13d7a@anonymised.invalid'
                 Statutory ledger_entries preserved for CBN audit; all PII & active consents revoked!

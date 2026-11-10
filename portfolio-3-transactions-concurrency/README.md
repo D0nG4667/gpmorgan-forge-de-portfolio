@@ -36,7 +36,10 @@ stateDiagram-v2
     REVERSED --> [*]
 ```
 
-### 2.2 Multi-Session Concurrency Sequence Diagram (Canonical Lock Ordering &OCC)
+> [!NOTE]
+> `TransactionStatus` in [`schema.sql`](../portfolio-1-database-design/schema.sql) and [`models.py`](../src/gpmorgan_forge/models.py) models all five domain lifecycle states above (`PENDING`, `FLAGGED`, `SETTLED`, `FAILED`, `REVERSED`). In [`operations.py`](../src/gpmorgan_forge/operations.py), synchronous transfers commit directly as `SETTLED` (emitting a companion `fraud_alerts` row when `amount >= CBN_LARGE_VALUE_THRESHOLD`) or abort via `ROLLBACK` on validation/concurrency errors, while `reverse_failed_transaction()` transitions `SETTLED -> REVERSED`.
+
+### 2.2 Multi-Session Concurrency Sequence Diagram (Canonical Lock Ordering & OCC)
 
 ```mermaid
 sequenceDiagram
@@ -47,18 +50,20 @@ sequenceDiagram
     participant Ledger as Double-Entry Ledger & Audit Chain
 
     Note over W1,W2: Both workers sort target account IDs canonically: [Account A, Account B]
-    W1->>PG: BEGIN ISOLATION LEVEL REPEATABLE READ
-    W2->>PG: BEGIN ISOLATION LEVEL REPEATABLE READ
-    W1->>PG: SELECT ... FROM accounts WHERE id IN (A, B) ORDER BY account_id ASC FOR UPDATE
+    W1->>PG: BEGIN ISOLATION LEVEL READ COMMITTED
+    W2->>PG: BEGIN ISOLATION LEVEL READ COMMITTED
+    W1->>PG: SELECT ... FROM accounts WHERE account_id IN (A, B) ORDER BY account_id ASC FOR UPDATE
     PG-->>W1: Lock granted on Account A and Account B (version=3)
-    W2->>PG: SELECT ... FROM accounts WHERE id IN (A, B) ORDER BY account_id ASC FOR UPDATE
+    W2->>PG: SELECT ... FROM accounts WHERE account_id IN (A, B) ORDER BY account_id ASC FOR UPDATE
     Note over W2,PG: Worker 2 blocks cleanly waiting for Account A (Zero AB-BA Deadlock!)
     W1->>Ledger: UPDATE accounts (version=4) + INSERT 2 ledger_entries + INSERT audit_log
     W1->>PG: COMMIT
-    PG-->>W2: Lock released & granted to Worker 2 with refreshed state (version=4)
+    PG-->>W2: Lock released & granted to Worker 2 with re-evaluated row tuple (version=4)
     W2->>Ledger: UPDATE accounts (version=5) + INSERT 2 ledger_entries + INSERT audit_log
     W2->>PG: COMMIT
 ```
+
+*(Under `REPEATABLE READ` / `SERIALIZABLE`, Worker 2 still avoids any AB-BA deadlock via canonical ordering, and if Account A was modified after Worker 2's snapshot began, PostgreSQL aborts Worker 2 cleanly with `SQLSTATE 40001` so the application retries on a fresh snapshot.)*
 
 ---
 

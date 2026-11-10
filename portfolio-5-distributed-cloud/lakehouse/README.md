@@ -33,9 +33,9 @@ flowchart LR
 | --- | --- |
 | [`debezium/postgres-ledger-connector.json`](debezium/postgres-ledger-connector.json) | Transactional CDC of `public.transactions` via logical decoding, unwrapped and routed to `forge.cdc.transactions`; credentials come from environment config providers. |
 | [`spark/bronze_to_silver.py`](spark/bronze_to_silver.py) | Continuous Kafka → Bronze → Silver job with a data contract, dead-letter queue, idempotent `MERGE INTO`, and checkpointing. |
-| [`dbt/`](dbt) | Gold star schema (`dim_corridor`, `fact_corridor_settlement`) built through Trino on Iceberg, with generic tests, source freshness, and a BCBS 239 reconciliation test. |
-| [`airflow/dags/forge_medallion_dag.py`](airflow/dags/forge_medallion_dag.py) | Hourly batch orchestration: freshness gate → `dbt build` → reconciliation test, with retries and exponential backoff. |
-| [`trino/catalog/`](trino/catalog) | Iceberg (Polaris REST, vended credentials), PostgreSQL, MongoDB, and Cassandra connectors for zero-ETL federation. |
+| [`dbt/dbt_project.yml`](dbt/dbt_project.yml) | Gold star schema (`dim_corridor`, `fact_corridor_settlement`) built through Trino on Iceberg, with generic tests, source freshness, and a BCBS 239 reconciliation test. |
+| [`airflow/dags/forge_medallion_dag.py`](airflow/dags/forge_medallion_dag.py) | Hourly batch orchestration: freshness gate → `dbt build --select +marts` → reconciliation test, with retries and exponential backoff. |
+| [`trino/catalog/iceberg.properties`](trino/catalog/iceberg.properties) | Iceberg (Polaris REST, vended credentials), PostgreSQL, MongoDB, and Cassandra catalog connectors for zero-ETL federation. |
 | [`trino/init_iceberg_tables.sql`](trino/init_iceberg_tables.sql) | DDL for the Bronze, dead-letter, and Silver Iceberg tables. |
 | [`otel/otel-collector-config.yaml`](otel/otel-collector-config.yaml) | OTLP receiver and memory-limited batch pipeline for the database tracer. |
 
@@ -58,9 +58,17 @@ flowchart LR
 ## Running the stack
 
 ```bash
+# 1. Generate local TLS 1.3 certificates required by postgres-primary and postgres-replica
+uv run python scripts/generate_dev_tls.py
+
+# 2. Pull multi-GB Lakehouse images sequentially and start the full stack
+docker compose --parallel 1 -f compose.yaml --profile full pull
 docker compose -f compose.yaml --profile full up -d
 
-# Register the Debezium CDC connector
+# 3. Initialize Bronze, DLQ, Silver, and Gold Iceberg namespaces/tables in Polaris via Trino
+docker compose -f compose.yaml exec -T trino trino < portfolio-5-distributed-cloud/lakehouse/trino/init_iceberg_tables.sql
+
+# 4. Register the Debezium CDC connector
 curl -X PUT -H "Content-Type: application/json" \
   http://localhost:8083/connectors/forge-postgres-ledger-cdc/config \
   --data "$(jq .config portfolio-5-distributed-cloud/lakehouse/debezium/postgres-ledger-connector.json)"

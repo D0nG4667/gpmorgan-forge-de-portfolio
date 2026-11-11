@@ -197,6 +197,8 @@ docker compose --parallel 1 --profile full pull
 docker compose --profile full up -d
 ```
 
+![Live Docker Desktop GPMorgan Forge Polyglot & Lakehouse Containers](docs/assets/screenshots/docker-desktop-forge-services.png)
+
 ---
 
 ## 7. Verification, Testing & 100% Coverage Suite

@@ -88,6 +88,8 @@ Executed via `DistributedClusterRouter` in [`src/gpmorgan_forge/distributed_priv
 
 ## 5. Captured Live Distributed SQL, Streaming, Lakehouse & Privacy Screenshots
 
+![A0: Live Docker Desktop GPMorgan Forge Polyglot & Lakehouse Containers](../docs/assets/screenshots/docker-desktop-forge-services.png)
+
 ![A1: Docker Compose 17-Service Polyglot & Medallion Lakehouse Stack](../docs/assets/screenshots/01_docker_compose_polyglot_stack_healthy.png)
 
 ![A2: PostgreSQL 18 TLS 1.3 Streaming Replication & Zero-Lag WAL Telemetry](../docs/assets/screenshots/02_postgres18_streaming_replication_stat.png)

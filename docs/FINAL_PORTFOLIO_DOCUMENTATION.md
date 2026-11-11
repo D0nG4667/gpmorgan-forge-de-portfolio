@@ -259,6 +259,7 @@ All five portfolio pillars are continuously verified by a **3-tier automated tes
 
 | Screenshot ID | Portfolio Pillar | Captured Verification Artefact |
 | :--- | :--- | :--- |
+| **A0** | Live Docker Desktop UI (`compose.yaml`) | [docker-desktop-forge-services.png](assets/screenshots/docker-desktop-forge-services.png) |
 | **A1** | Infrastructure (`compose.yaml`) | [01_docker_compose_polyglot_stack_healthy.png](assets/screenshots/01_docker_compose_polyglot_stack_healthy.png) |
 | **A2** | Portfolio 5 (TLS 1.3 WAL Replication) | [02_postgres18_streaming_replication_stat.png](assets/screenshots/02_postgres18_streaming_replication_stat.png) |
 | **B1** | Portfolio 1 (3NF/BCNF Schema DDL) | [03_p1_postgres18_10_tables_catalog.png](assets/screenshots/03_p1_postgres18_10_tables_catalog.png) |
@@ -280,6 +281,8 @@ All five portfolio pillars are continuously verified by a **3-tier automated tes
 | **F2** | Portfolio 5 (RBAC, RLS & NDPA 2023) | [19_p5_rbac_rls_masked_views_and_ndpa_erasure.png](assets/screenshots/19_p5_rbac_rls_masked_views_and_ndpa_erasure.png) |
 | **G1** | E2E Evidence Generator JSON | [20_e2e_portfolio_evidence_generator_json.png](assets/screenshots/20_e2e_portfolio_evidence_generator_json.png) |
 | **G2** | 100% Pytest Coverage & Linters | [21_pytest_100_percent_branch_coverage_and_linters.png](assets/screenshots/21_pytest_100_percent_branch_coverage_and_linters.png) |
+
+![A0: Live Docker Desktop GPMorgan Forge Polyglot & Lakehouse Containers](assets/screenshots/docker-desktop-forge-services.png)
 
 ![G2: Pytest 100% Line & Branch Coverage, Ruff, Mypy & Rumdl Quality Gates](assets/screenshots/21_pytest_100_percent_branch_coverage_and_linters.png)
 

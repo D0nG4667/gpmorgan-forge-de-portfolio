@@ -276,6 +276,56 @@ def test_spark_streaming_job_implements_dlq_merge_and_checkpointing(
         ),
     ]
 
+    # Warm restart (GET -> 200) skips POST /catalogs while still healing idempotent RBAC grants.
+    recorded_requests.clear()
+
+    def _fake_warm_urlopen(req: urllib.request.Request, timeout: int = 10) -> _FakeHTTPResponse:
+        assert timeout == 10
+        method = req.get_method()
+        recorded_requests.append((method, req.full_url, ""))
+        if req.full_url.endswith("/v1/oauth/tokens"):
+            return _FakeHTTPResponse(200, {"access_token": "tok-polaris-warm"})
+        return _FakeHTTPResponse(200, {})
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_warm_urlopen)
+    module.ensure_polaris_catalog()
+    assert [(m, u) for m, u, _ in recorded_requests] == [
+        ("POST", "http://polaris-catalog:8181/api/catalog/v1/oauth/tokens"),
+        ("GET", "http://polaris-catalog:8181/api/management/v1/catalogs/forge_lakehouse"),
+        (
+            "PUT",
+            "http://polaris-catalog:8181/api/management/v1/catalogs/"
+            "forge_lakehouse/catalog-roles/catalog_admin/grants",
+        ),
+        (
+            "PUT",
+            "http://polaris-catalog:8181/api/management/v1/principal-roles/"
+            "service_admin/catalog-roles/forge_lakehouse",
+        ),
+    ]
+
+    # Unexpected HTTP 500 surfaces as HTTPError (not swallowed by URLError).
+    def _fake_500_urlopen(req: urllib.request.Request, timeout: int = 10) -> _FakeHTTPResponse:
+        assert timeout == 10
+        raise urllib.error.HTTPError(
+            req.full_url, 500, "Internal Server Error", Message(), io.BytesIO(b'{"error":"boom"}')
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_500_urlopen)
+    with pytest.raises(urllib.error.HTTPError):
+        module.ensure_polaris_catalog()
+
+    # Empty micro-batch before Debezium emits events returns immediately without writes/SQL.
+    class _FakeEmptyBatch:
+        def isEmpty(self) -> bool:
+            return True
+
+        @property
+        def sparkSession(self) -> Any:
+            raise AssertionError("Empty batch must short-circuit before accessing sparkSession")
+
+    module.process_batch(_FakeEmptyBatch(), 0)
+
     executed_ddl: list[str] = []
 
     class _FakeSpark:
@@ -309,6 +359,7 @@ def test_trino_catalogs_and_debezium_connector_are_configured() -> None:
     assert connectors["iceberg"]["iceberg.catalog.type"] == "rest"
     assert "polaris-catalog" in connectors["iceberg"]["iceberg.rest-catalog.uri"]
     assert connectors["iceberg"]["iceberg.rest-catalog.vended-credentials-enabled"] == "true"
+    assert connectors["iceberg"]["fs.hadoop.enabled"] == "true"
     assert "${ENV:" in connectors["postgresql"]["connection-password"]
 
     connector = json.loads(

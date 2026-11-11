@@ -11,6 +11,7 @@ Design patterns:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -27,11 +28,11 @@ from pyspark.sql.types import DecimalType, StringType, StructField, StructType
 logger = logging.getLogger(__name__)
 
 CATALOG = "forge"
-WAREHOUSE = os.environ.get("POLARIS_WAREHOUSE", "forge_lakehouse")
-WAREHOUSE_LOCATION = os.environ.get("POLARIS_WAREHOUSE_LOCATION", "file:///tmp/forge_lakehouse/")
-STORAGE_TYPE = os.environ.get("POLARIS_STORAGE_TYPE", "FILE")
-KAFKA_TOPIC = os.environ.get("CDC_TOPIC", "forge.cdc.transactions")
-CHECKPOINT_DIR = os.environ.get("CHECKPOINT_DIR", "/tmp/forge-checkpoints/transactions")
+DEFAULT_WAREHOUSE = "forge_lakehouse"
+DEFAULT_WAREHOUSE_LOCATION = "file:///tmp/forge_lakehouse/"
+DEFAULT_STORAGE_TYPE = "FILE"
+DEFAULT_KAFKA_TOPIC = "forge.cdc.transactions"
+DEFAULT_CHECKPOINT_DIR = "/tmp/forge-checkpoints/transactions"
 HIGH_VALUE_THRESHOLD = "5000000.0000"
 
 EVENT_SCHEMA = StructType(
@@ -72,15 +73,21 @@ def _request_json(
 
 
 def ensure_polaris_catalog() -> None:
-    """Idempotently provision the Polaris catalog warehouse and RBAC grants on cold start."""
+    """Idempotently provision the Polaris catalog warehouse and RBAC grants on startup."""
     catalog_uri = os.environ["POLARIS_CATALOG_URI"].rstrip("/")
     credential = os.environ["POLARIS_OAUTH_CREDENTIAL"]
     if ":" not in credential:
         return
     client_id, client_secret = credential.split(":", 1)
+    warehouse = os.environ.get("POLARIS_WAREHOUSE", DEFAULT_WAREHOUSE)
+    warehouse_location = os.environ.get("POLARIS_WAREHOUSE_LOCATION", DEFAULT_WAREHOUSE_LOCATION)
+    storage_type = os.environ.get("POLARIS_STORAGE_TYPE", DEFAULT_STORAGE_TYPE)
 
-    if WAREHOUSE_LOCATION.startswith("file://"):
-        Path(WAREHOUSE_LOCATION.removeprefix("file://")).mkdir(parents=True, exist_ok=True)
+    if warehouse_location.startswith("file://"):
+        warehouse_path = Path(warehouse_location.removeprefix("file://"))
+        warehouse_path.mkdir(parents=True, exist_ok=True)
+        with contextlib.suppress(OSError):
+            warehouse_path.chmod(0o777)
 
     management_uri = os.environ.get("POLARIS_MANAGEMENT_URI") or (
         f"{catalog_uri.removesuffix('/api/catalog')}/api/management/v1"
@@ -113,46 +120,44 @@ def ensure_polaris_catalog() -> None:
         }
         status, _ = _request_json(
             "GET",
-            f"{management_uri}/catalogs/{WAREHOUSE}",
+            f"{management_uri}/catalogs/{warehouse}",
             headers=auth_headers,
             allowed_statuses=frozenset({200, 404}),
         )
-        if status == 200:
-            return
-
-        create_status, _ = _request_json(
-            "POST",
-            f"{management_uri}/catalogs",
-            headers=auth_headers,
-            payload=json.dumps(
-                {
-                    "catalog": {
-                        "name": WAREHOUSE,
-                        "type": "INTERNAL",
-                        "properties": {"default-base-location": WAREHOUSE_LOCATION},
-                        "storageConfigInfo": {
-                            "storageType": STORAGE_TYPE,
-                            "allowedLocations": [WAREHOUSE_LOCATION],
-                        },
+        if status == 404:
+            create_status, _ = _request_json(
+                "POST",
+                f"{management_uri}/catalogs",
+                headers=auth_headers,
+                payload=json.dumps(
+                    {
+                        "catalog": {
+                            "name": warehouse,
+                            "type": "INTERNAL",
+                            "properties": {"default-base-location": warehouse_location},
+                            "storageConfigInfo": {
+                                "storageType": storage_type,
+                                "allowedLocations": [warehouse_location],
+                            },
+                        }
                     }
-                }
-            ).encode("utf-8"),
-            allowed_statuses=frozenset({200, 201, 404, 409}),
-        )
-        if create_status == 404:
-            # Non-Polaris generic Iceberg REST catalog without /api/management/v1.
-            return
+                ).encode("utf-8"),
+                allowed_statuses=frozenset({200, 201, 404, 409}),
+            )
+            if create_status == 404:
+                # Non-Polaris generic Iceberg REST catalog without /api/management/v1.
+                return
 
         _request_json(
             "PUT",
-            f"{management_uri}/catalogs/{WAREHOUSE}/catalog-roles/catalog_admin/grants",
+            f"{management_uri}/catalogs/{warehouse}/catalog-roles/catalog_admin/grants",
             headers=auth_headers,
             payload=json.dumps(
                 {
                     "grant": {
                         "type": "catalog",
                         "privilege": "CATALOG_MANAGE_CONTENT",
-                        "catalogName": WAREHOUSE,
+                        "catalogName": warehouse,
                     }
                 }
             ).encode("utf-8"),
@@ -160,27 +165,33 @@ def ensure_polaris_catalog() -> None:
         )
         _request_json(
             "PUT",
-            f"{management_uri}/principal-roles/service_admin/catalog-roles/{WAREHOUSE}",
+            f"{management_uri}/principal-roles/service_admin/catalog-roles/{warehouse}",
             headers=auth_headers,
             payload=json.dumps({"catalogRole": {"name": "catalog_admin"}}).encode("utf-8"),
             allowed_statuses=frozenset({200, 201, 204, 409}),
         )
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        logger.error("Polaris catalog auto-bootstrap failed (HTTP %d): %s", exc.code, detail)
+        raise
     except urllib.error.URLError as exc:
         logger.warning("Skipping Polaris management catalog auto-bootstrap: %s", exc)
 
 
 def build_session() -> SparkSession:
     """Create a Spark session wired to the Apache Polaris Iceberg REST catalog."""
+    warehouse = os.environ.get("POLARIS_WAREHOUSE", DEFAULT_WAREHOUSE)
     return (
         SparkSession.builder.appName("forge-bronze-to-silver")
         .config(
             "spark.sql.extensions",
             "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions",
         )
+        .config("spark.hadoop.fs.permissions.umask-mode", "000")
         .config(f"spark.sql.catalog.{CATALOG}", "org.apache.iceberg.spark.SparkCatalog")
         .config(f"spark.sql.catalog.{CATALOG}.type", "rest")
         .config(f"spark.sql.catalog.{CATALOG}.uri", os.environ["POLARIS_CATALOG_URI"])
-        .config(f"spark.sql.catalog.{CATALOG}.warehouse", WAREHOUSE)
+        .config(f"spark.sql.catalog.{CATALOG}.warehouse", warehouse)
         .config(f"spark.sql.catalog.{CATALOG}.credential", os.environ["POLARIS_OAUTH_CREDENTIAL"])
         .config(f"spark.sql.catalog.{CATALOG}.scope", "PRINCIPAL_ROLE:ALL")
         .config(
@@ -254,63 +265,73 @@ def process_batch(batch: DataFrame, batch_id: int) -> None:
     if batch.isEmpty():
         return
     spark = batch.sparkSession
-    parsed = batch.select(
-        F.col("value").cast("string").alias("raw"),
-        F.from_json(F.col("value").cast("string"), EVENT_SCHEMA).alias("event"),
-    ).select("raw", "event.*")
-
-    parsed.select("raw", F.current_timestamp().alias("ingested_at")).writeTo(
-        f"{CATALOG}.forge_lakehouse.bronze_transactions"
-    ).append()
-
-    bad = parsed.filter(violates_contract())
-    bad.select("raw", F.lit("CONTRACT_VIOLATION").alias("reason")).writeTo(
-        f"{CATALOG}.forge_lakehouse.dlq_transactions"
-    ).append()
-
-    good = (
-        parsed.filter(~violates_contract())
-        .dropDuplicates(["reference_code"])
-        .select(
-            "reference_code",
-            F.upper("currency").alias("currency"),
-            "amount",
-            F.upper(F.coalesce(F.col("status"), F.lit("SETTLED"))).alias("status"),
-            (
-                (F.col("amount") >= F.lit(HIGH_VALUE_THRESHOLD).cast(DecimalType(28, 4)))
-                | (F.col("is_suspicious") == "true")
-            ).alias("spark_fraud_flagged"),
-            F.current_timestamp().alias("ingested_at"),
+    view_name = f"batch_{batch_id}"
+    parsed = (
+        batch.select(
+            F.col("value").cast("string").alias("raw"),
+            F.from_json(F.col("value").cast("string"), EVENT_SCHEMA).alias("event"),
         )
+        .select("raw", "event.*")
+        .persist()
     )
-    good.createOrReplaceTempView(f"batch_{batch_id}")
-    spark.sql(
-        f"""
-        MERGE INTO {CATALOG}.forge_lakehouse.silver_transactions AS t
-        USING batch_{batch_id} AS s
-        ON t.reference_code = s.reference_code
-        WHEN MATCHED THEN UPDATE SET *
-        WHEN NOT MATCHED THEN INSERT *
-        """
-    )
+    try:
+        parsed.select("raw", F.current_timestamp().alias("ingested_at")).writeTo(
+            f"{CATALOG}.forge_lakehouse.bronze_transactions"
+        ).append()
+
+        bad = parsed.filter(violates_contract())
+        bad.select("raw", F.lit("CONTRACT_VIOLATION").alias("reason")).writeTo(
+            f"{CATALOG}.forge_lakehouse.dlq_transactions"
+        ).append()
+
+        good = (
+            parsed.filter(~violates_contract())
+            .dropDuplicates(["reference_code"])
+            .select(
+                "reference_code",
+                F.upper("currency").alias("currency"),
+                "amount",
+                F.upper(F.coalesce(F.col("status"), F.lit("SETTLED"))).alias("status"),
+                (
+                    (F.col("amount") >= F.lit(HIGH_VALUE_THRESHOLD).cast(DecimalType(28, 4)))
+                    | (F.col("is_suspicious") == "true")
+                ).alias("spark_fraud_flagged"),
+                F.current_timestamp().alias("ingested_at"),
+            )
+        )
+        good.createOrReplaceTempView(view_name)
+        spark.sql(
+            f"""
+            MERGE INTO {CATALOG}.forge_lakehouse.silver_transactions AS t
+            USING {view_name} AS s
+            ON t.reference_code = s.reference_code
+            WHEN MATCHED THEN UPDATE SET *
+            WHEN NOT MATCHED THEN INSERT *
+            """
+        )
+    finally:
+        spark.catalog.dropTempView(view_name)
+        parsed.unpersist()
 
 
 def main() -> None:
     """Bootstrap Lakehouse tables and start the continuous Kafka -> Bronze/Silver stream."""
+    kafka_topic = os.environ.get("CDC_TOPIC", DEFAULT_KAFKA_TOPIC)
+    checkpoint_dir = os.environ.get("CHECKPOINT_DIR", DEFAULT_CHECKPOINT_DIR)
     ensure_polaris_catalog()
     spark = build_session()
     bootstrap_lakehouse_tables(spark)
     stream = (
         spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092"))
-        .option("subscribe", KAFKA_TOPIC)
+        .option("subscribe", kafka_topic)
         .option("startingOffsets", "earliest")
         .option("failOnDataLoss", "false")
         .load()
     )
     (
         stream.writeStream.foreachBatch(process_batch)
-        .option("checkpointLocation", CHECKPOINT_DIR)
+        .option("checkpointLocation", checkpoint_dir)
         .trigger(processingTime="10 seconds")
         .start()
         .awaitTermination()

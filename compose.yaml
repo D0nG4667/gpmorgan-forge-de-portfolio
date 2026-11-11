@@ -368,6 +368,11 @@ services:
       - full
     environment:
       POLARIS_BOOTSTRAP_CREDENTIALS: ${POLARIS_BOOTSTRAP_CREDENTIALS:-POLARIS,root,s3cr3t}
+      polaris.readiness.ignore-severe-issues: ${POLARIS_IGNORE_SEVERE_ISSUES:-true}
+      polaris.features."ALLOW_INSECURE_STORAGE_TYPES": ${POLARIS_ALLOW_INSECURE_STORAGE:-true}
+      polaris.features."SUPPORTED_CATALOG_STORAGE_TYPES": ${POLARIS_SUPPORTED_STORAGE_TYPES:-["FILE","S3","GCS","AZURE"]}
+    volumes:
+      - lakehouse_warehouse_data:/tmp/forge_lakehouse
     ports:
       - "${POLARIS_PORT:-8181}:8181"
     networks:
@@ -400,6 +405,7 @@ services:
       MONGO_PASSWORD: ${MONGO_PASSWORD:-forge_mongo_pass_2026}
     volumes:
       - ./portfolio-5-distributed-cloud/lakehouse/trino/catalog:/etc/trino/catalog:ro
+      - lakehouse_warehouse_data:/tmp/forge_lakehouse
     ports:
       - "${TRINO_PORT:-8082}:8080"
     networks:
@@ -498,6 +504,7 @@ services:
       CDC_TOPIC: forge.cdc.transactions
     volumes:
       - ./portfolio-5-distributed-cloud/lakehouse/spark:/opt/forge/spark:ro
+      - lakehouse_warehouse_data:/tmp/forge_lakehouse
     depends_on:
       kafka:
         condition: service_healthy
@@ -608,3 +615,5 @@ volumes:
     name: forge-timescaledb-data
   kafka_data:
     name: forge-kafka-data
+  lakehouse_warehouse_data:
+    name: forge-lakehouse-warehouse-data

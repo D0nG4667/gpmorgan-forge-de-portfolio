@@ -157,7 +157,8 @@ cqlsh "$CASSANDRA_HOST" "${CASSANDRA_CQL_PORT:-9042}" \
 ### Step 6: Trino Iceberg Schemas & Debezium Logical-Decoding CDC Connector
 
 ```bash
-# Initialize Bronze, DLQ, Silver, and Gold Iceberg namespaces/tables via Trino + Polaris
+# Idempotently ensure Bronze, DLQ, Silver, and Gold Iceberg namespaces/tables via Trino + Polaris
+# (spark-streaming's bronze_to_silver.py also self-bootstraps these tables on container startup)
 trino --server "$TRINO_COORDINATOR_URI" -f portfolio-5-distributed-cloud/lakehouse/trino/init_iceberg_tables.sql
 
 # Register the PostgreSQL pgoutput CDC connector with Debezium Kafka Connect

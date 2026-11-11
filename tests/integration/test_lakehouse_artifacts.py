@@ -9,10 +9,16 @@ runtimes are not importable in CI.
 from __future__ import annotations
 
 import ast
+import importlib.util
+import io
 import json
 import re
 import sqlite3
+import types
+import urllib.error
+import urllib.request
 from decimal import Decimal
+from email.message import Message
 from pathlib import Path
 from typing import Any
 
@@ -157,20 +163,141 @@ def test_airflow_dag_orchestrates_freshness_dbt_build_and_reconciliation() -> No
     assert "--select +marts" in source
 
 
+def _load_spark_module_with_stubs(monkeypatch: pytest.MonkeyPatch, path: Path) -> Any:
+    """Import ``bronze_to_silver.py`` using lightweight PySpark stubs for CI verification."""
+    pyspark_mod = types.ModuleType("pyspark")
+    sql_mod = types.ModuleType("pyspark.sql")
+    funcs_mod = types.ModuleType("pyspark.sql.functions")
+    types_mod = types.ModuleType("pyspark.sql.types")
+
+    sql_mod.DataFrame = object  # type: ignore[attr-defined]
+    sql_mod.SparkSession = object  # type: ignore[attr-defined]
+    sql_mod.functions = funcs_mod  # type: ignore[attr-defined]
+    types_mod.DecimalType = lambda p, s: ("decimal", p, s)  # type: ignore[attr-defined]
+    types_mod.StringType = lambda: "string"  # type: ignore[attr-defined]
+    types_mod.StructField = lambda name, dtype: (name, dtype)  # type: ignore[attr-defined]
+    types_mod.StructType = lambda fields: tuple(fields)  # type: ignore[attr-defined]
+
+    monkeypatch.setitem(__import__("sys").modules, "pyspark", pyspark_mod)
+    monkeypatch.setitem(__import__("sys").modules, "pyspark.sql", sql_mod)
+    monkeypatch.setitem(__import__("sys").modules, "pyspark.sql.functions", funcs_mod)
+    monkeypatch.setitem(__import__("sys").modules, "pyspark.sql.types", types_mod)
+
+    spec = importlib.util.spec_from_file_location("forge_bronze_to_silver_test", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 @pytest.mark.integration
-def test_spark_streaming_job_implements_dlq_merge_and_checkpointing() -> None:
-    """Spark job defines the contract, DLQ routing, idempotent MERGE, and checkpointing."""
+def test_spark_streaming_job_implements_dlq_merge_and_checkpointing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Spark job bootstraps Polaris/Iceberg tables, enforces DLQ, and runs idempotent MERGE."""
     path = LAKEHOUSE_DIR / "spark/bronze_to_silver.py"
     tree = parse_module(path)
     functions = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
-    assert {"build_session", "violates_contract", "process_batch", "main"} <= functions
+    assert {
+        "ensure_polaris_catalog",
+        "build_session",
+        "bootstrap_lakehouse_tables",
+        "violates_contract",
+        "process_batch",
+        "main",
+    } <= functions
     source = path.read_text(encoding="utf-8")
-    assert "MERGE INTO" in source
-    assert "WHEN MATCHED THEN UPDATE SET *" in source
-    assert "dlq_transactions" in source
-    assert "bronze_transactions" in source
-    assert "checkpointLocation" in source
-    assert 'type", "rest"' in source
+    for expected in (
+        "CREATE NAMESPACE IF NOT EXISTS",
+        "CREATE TABLE IF NOT EXISTS",
+        "MERGE INTO",
+        "WHEN MATCHED THEN UPDATE SET *",
+        "dlq_transactions",
+        "bronze_transactions",
+        "silver_transactions",
+        "batch.isEmpty()",
+        '"failOnDataLoss", "false"',
+        "checkpointLocation",
+        'type", "rest"',
+    ):
+        assert expected in source
+
+    warehouse_dir = tmp_path / "warehouse"
+    monkeypatch.setenv("POLARIS_CATALOG_URI", "http://polaris-catalog:8181/api/catalog")
+    monkeypatch.setenv("POLARIS_OAUTH_CREDENTIAL", "root:s3cr3t")
+    monkeypatch.setenv("POLARIS_WAREHOUSE_LOCATION", f"file://{warehouse_dir.as_posix()}/")
+    module = _load_spark_module_with_stubs(monkeypatch, path)
+
+    recorded_requests: list[tuple[str, str, str]] = []
+
+    class _FakeHTTPResponse:
+        def __init__(self, status: int, body: dict[str, Any]) -> None:
+            self.status = status
+            self._payload = json.dumps(body).encode("utf-8")
+
+        def read(self) -> bytes:
+            return self._payload
+
+        def __enter__(self) -> _FakeHTTPResponse:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+    def _fake_urlopen(req: urllib.request.Request, timeout: int = 10) -> _FakeHTTPResponse:
+        assert timeout == 10
+        method = req.get_method()
+        body_text = req.data.decode("utf-8") if isinstance(req.data, bytes) else ""
+        recorded_requests.append((method, req.full_url, body_text))
+        if req.full_url.endswith("/v1/oauth/tokens"):
+            return _FakeHTTPResponse(200, {"access_token": "tok-polaris-bootstrap"})
+        if method == "GET" and req.full_url.endswith("/api/management/v1/catalogs/forge_lakehouse"):
+            raise urllib.error.HTTPError(
+                req.full_url, 404, "Not Found", Message(), io.BytesIO(b"{}")
+            )
+        return _FakeHTTPResponse(201, {})
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    module.ensure_polaris_catalog()
+    assert warehouse_dir.is_dir()
+    assert [(m, u) for m, u, _ in recorded_requests] == [
+        ("POST", "http://polaris-catalog:8181/api/catalog/v1/oauth/tokens"),
+        ("GET", "http://polaris-catalog:8181/api/management/v1/catalogs/forge_lakehouse"),
+        ("POST", "http://polaris-catalog:8181/api/management/v1/catalogs"),
+        (
+            "PUT",
+            "http://polaris-catalog:8181/api/management/v1/catalogs/"
+            "forge_lakehouse/catalog-roles/catalog_admin/grants",
+        ),
+        (
+            "PUT",
+            "http://polaris-catalog:8181/api/management/v1/principal-roles/"
+            "service_admin/catalog-roles/forge_lakehouse",
+        ),
+    ]
+
+    executed_ddl: list[str] = []
+
+    class _FakeSpark:
+        def sql(self, statement: str) -> None:
+            executed_ddl.append(statement)
+
+    module.bootstrap_lakehouse_tables(_FakeSpark())
+    assert len(executed_ddl) == 5
+    joined_ddl = "\n".join(executed_ddl)
+    trino_ddl = (LAKEHOUSE_DIR / "trino/init_iceberg_tables.sql").read_text(encoding="utf-8")
+    for col_name in (
+        "raw",
+        "ingested_at",
+        "reason",
+        "reference_code",
+        "currency",
+        "amount",
+        "status",
+        "spark_fraud_flagged",
+    ):
+        assert col_name in joined_ddl
+        assert col_name in trino_ddl
 
 
 @pytest.mark.integration

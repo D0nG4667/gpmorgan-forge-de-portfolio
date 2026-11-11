@@ -32,11 +32,11 @@ flowchart LR
 | Path | Role |
 | --- | --- |
 | [`debezium/postgres-ledger-connector.json`](debezium/postgres-ledger-connector.json) | Transactional CDC of `public.transactions` via logical decoding, unwrapped and routed to `forge.cdc.transactions`; credentials come from environment config providers. |
-| [`spark/bronze_to_silver.py`](spark/bronze_to_silver.py) | Continuous Kafka → Bronze → Silver job with a data contract, dead-letter queue, idempotent `MERGE INTO`, and checkpointing. |
+| [`spark/bronze_to_silver.py`](spark/bronze_to_silver.py) | Continuous Kafka → Bronze → Silver job that self-bootstraps the Polaris warehouse and Bronze/DLQ/Silver Iceberg v2 tables on startup, enforces a data contract with dead-letter routing, and runs idempotent `MERGE INTO` with checkpointing. |
 | [`dbt/dbt_project.yml`](dbt/dbt_project.yml) | Gold star schema (`dim_corridor`, `fact_corridor_settlement`) built through Trino on Iceberg, with generic tests, source freshness, and a BCBS 239 reconciliation test. |
 | [`airflow/dags/forge_medallion_dag.py`](airflow/dags/forge_medallion_dag.py) | Hourly batch orchestration: freshness gate → `dbt build --select +marts` → reconciliation test, with retries and exponential backoff. |
 | [`trino/catalog/iceberg.properties`](trino/catalog/iceberg.properties) | Iceberg (Polaris REST, vended credentials), PostgreSQL, MongoDB, and Cassandra catalog connectors for zero-ETL federation. |
-| [`trino/init_iceberg_tables.sql`](trino/init_iceberg_tables.sql) | DDL for the Bronze, dead-letter, and Silver Iceberg tables. |
+| [`trino/init_iceberg_tables.sql`](trino/init_iceberg_tables.sql) | Idempotent Trino DDL mirroring the Bronze, dead-letter, and Silver Iceberg v2 tables for standalone Trino/dbt provisioning. |
 | [`otel/otel-collector-config.yaml`](otel/otel-collector-config.yaml) | OTLP receiver and memory-limited batch pipeline for the database tracer. |
 
 ## Data engineering patterns
@@ -65,7 +65,7 @@ uv run python scripts/generate_dev_tls.py
 docker compose --parallel 1 -f compose.yaml --profile full pull
 docker compose -f compose.yaml --profile full up -d
 
-# 3. Initialize Bronze, DLQ, Silver, and Gold Iceberg namespaces/tables in Polaris via Trino
+# 3. (Optional when spark-streaming is running) Explicitly verify/create Iceberg tables via Trino
 docker compose -f compose.yaml exec -T trino trino < portfolio-5-distributed-cloud/lakehouse/trino/init_iceberg_tables.sql
 
 # 4. Register the Debezium CDC connector
@@ -74,9 +74,8 @@ curl -X PUT -H "Content-Type: application/json" \
   --data "$(jq .config portfolio-5-distributed-cloud/lakehouse/debezium/postgres-ledger-connector.json)"
 ```
 
-The Airflow UI is served on `AIRFLOW_PORT` (default `8085`), and Trino on `TRINO_PORT` (default `8082`).
-The Silver/Bronze/DLQ Iceberg tables must exist in the Polaris catalog before the first stream starts;
-create them by running [`trino/init_iceberg_tables.sql`](trino/init_iceberg_tables.sql) through Trino.
+The Airflow UI is served on `AIRFLOW_PORT` (default `8085`), Trino on `TRINO_PORT` (default `8082`), and Apache Polaris REST catalog on `POLARIS_PORT` (default `8181`, with Quarkus health probes on internal management port `:8182/q/health`).
+On startup, [`spark/bronze_to_silver.py`](spark/bronze_to_silver.py) idempotently provisions the `forge_lakehouse` Polaris warehouse, `forge_lakehouse` / `forge_dwh` namespaces, and Bronze/DLQ/Silver Iceberg v2 tables, and skips empty micro-batches until Debezium emits CDC events; [`trino/init_iceberg_tables.sql`](trino/init_iceberg_tables.sql) provides matching idempotent Trino DDL when running Trino/dbt independently.
 
 > **Scope note**: the test suite validates these artifacts statically and executes the dbt SQL against
 > SQLite; it does not start Airflow, Spark, or Trino. End-to-end cluster runs require the Compose stack.

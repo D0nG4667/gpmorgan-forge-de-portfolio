@@ -316,6 +316,7 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
     ports:
       - "${KAFKA_PORT:-9092}:9092"
     volumes:
@@ -325,7 +326,7 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
       interval: 10s
-      timeout: 5s
+      timeout: 15s
       retries: 10
       start_period: 15s
 
@@ -365,12 +366,14 @@ services:
     profiles:
       - lakehouse
       - full
+    environment:
+      POLARIS_BOOTSTRAP_CREDENTIALS: ${POLARIS_BOOTSTRAP_CREDENTIALS:-POLARIS,root,s3cr3t}
     ports:
       - "${POLARIS_PORT:-8181}:8181"
     networks:
       - forge-data-mesh
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8181/healthcheck || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8182/q/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10

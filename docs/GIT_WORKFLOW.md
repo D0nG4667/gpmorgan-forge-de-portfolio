@@ -29,6 +29,8 @@ flowchart LR
     MAIN_8(("main"))
     B9["fix/lakehouse-healthcheck-and-bootstrap"]
     MAIN_9(("main"))
+    B10["refactor/lakehouse-stream-config"]
+    MAIN_10(("main"))
 
     MAIN_0 --> B1 --> MAIN_1
     MAIN_1 --> B2 --> MAIN_2
@@ -39,6 +41,7 @@ flowchart LR
     MAIN_6 --> B7 --> MAIN_7
     MAIN_7 --> B8 --> MAIN_8
     MAIN_8 --> B9 --> MAIN_9
+    MAIN_9 --> B10 --> MAIN_10
 ```
 
 ### Branch Naming Prefixes

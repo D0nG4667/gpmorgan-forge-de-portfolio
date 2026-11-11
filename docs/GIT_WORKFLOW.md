@@ -27,6 +27,8 @@ flowchart LR
     MAIN_7(("main"))
     B8["docs/align-repo-docs-and-metadata"]
     MAIN_8(("main"))
+    B9["fix/lakehouse-healthcheck-and-bootstrap"]
+    MAIN_9(("main"))
 
     MAIN_0 --> B1 --> MAIN_1
     MAIN_1 --> B2 --> MAIN_2
@@ -36,6 +38,7 @@ flowchart LR
     MAIN_5 --> B6 --> MAIN_6
     MAIN_6 --> B7 --> MAIN_7
     MAIN_7 --> B8 --> MAIN_8
+    MAIN_8 --> B9 --> MAIN_9
 ```
 
 ### Branch Naming Prefixes

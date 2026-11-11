@@ -76,7 +76,7 @@ Before promoting a release to production, verify the following mandatory control
    - Provision the customer master key (`KMS_MASTER_KEY_ID=kms-ng-cbn-key-2026-01`, `FORGE_KMS_MASTER_KEY`) and KYC ZKP attestation seed (`FORGE_ZKP_ISSUER_SEED`) in Hardware Security Modules (HSM / Cloud KMS) for `AEAD_AES_256_GCM` field-level encryption and `Ed25519` ZKP credential signing.
 2. **Encryption in Transit & At Rest**:
    - Enforce `TLS 1.3` (`sslmode=verify-full` for PostgreSQL 18, `tls=true` for MongoDB 8.0 LTS and Redis 8.0, `bolt+s://` for Neo4j 5.26 LTS).
-   - Enable `AES-256` volume encryption on all nine persistent Compose/block volumes (`postgres_primary_data`, `postgres_replica_data`, `cockroachdb_data`, `mongodb_data`, `neo4j_data`, `redis_data`, `cassandra_data`, `timescaledb_data`, `kafka_data`) and S3/HDFS buckets.
+   - Enable `AES-256` volume encryption on all ten persistent Compose/block volumes (`postgres_primary_data`, `postgres_replica_data`, `cockroachdb_data`, `mongodb_data`, `neo4j_data`, `redis_data`, `cassandra_data`, `timescaledb_data`, `kafka_data`, `lakehouse_warehouse_data`) and S3/HDFS buckets, and override local-dev Polaris `FILE` storage flags (`POLARIS_IGNORE_SEVERE_ISSUES=false`, `POLARIS_ALLOW_INSECURE_STORAGE=false`, `POLARIS_SUPPORTED_STORAGE_TYPES='["S3"]'`) with S3/KMS-backed storage and JDBC persistence.
 3. **PostgreSQL 18 Production Engine Tuning (`postgresql.conf`)**:
 
    ```ini
@@ -157,7 +157,8 @@ cqlsh "$CASSANDRA_HOST" "${CASSANDRA_CQL_PORT:-9042}" \
 ### Step 6: Trino Iceberg Schemas & Debezium Logical-Decoding CDC Connector
 
 ```bash
-# Initialize Bronze, DLQ, Silver, and Gold Iceberg namespaces/tables via Trino + Polaris
+# Idempotently ensure Bronze, DLQ, Silver, and Gold Iceberg namespaces/tables via Trino + Polaris
+# (spark-streaming's bronze_to_silver.py also self-bootstraps these tables on container startup)
 trino --server "$TRINO_COORDINATOR_URI" -f portfolio-5-distributed-cloud/lakehouse/trino/init_iceberg_tables.sql
 
 # Register the PostgreSQL pgoutput CDC connector with Debezium Kafka Connect

@@ -257,8 +257,16 @@ def test_sql_nosql_devops_and_markdown_artifacts_deep_verification() -> None:
         "otel/opentelemetry-collector-contrib:0.120.0",
         "POSTGRES_DSN: postgresql://${POSTGRES_USER:-forge_admin}",
         "POLARIS_CATALOG_URI: ${POLARIS_CATALOG_URI:-http://polaris-catalog:8181/api/catalog}",
+        "POLARIS_BOOTSTRAP_CREDENTIALS: ${POLARIS_BOOTSTRAP_CREDENTIALS:-POLARIS,root,s3cr3t}",
+        "polaris.readiness.ignore-severe-issues: ${POLARIS_IGNORE_SEVERE_ISSUES:-true}",
+        'polaris.features."ALLOW_INSECURE_STORAGE_TYPES": ${POLARIS_ALLOW_INSECURE_STORAGE:-true}',
+        "lakehouse_warehouse_data:/tmp/forge_lakehouse",
+        "http://localhost:8182/q/health",
+        'KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"',
+        "timeout: 15s",
     ]:
         assert img in compose_txt
+    assert "http://localhost:8181/healthcheck" not in compose_txt
 
     env_example_txt = (repo_root / ".env.example").read_text(encoding="utf-8")
     for env_key in [
@@ -269,6 +277,7 @@ def test_sql_nosql_devops_and_markdown_artifacts_deep_verification() -> None:
         "KAFKA_BOOTSTRAP_SERVERS=kafka:9092",
         "FLINK_REST_URI=http://flink:8081",
         "POLARIS_CATALOG_URI=",
+        "POLARIS_BOOTSTRAP_CREDENTIALS=POLARIS,root,s3cr3t",
         "TRINO_COORDINATOR_URI=http://trino:8080",
     ]:
         assert env_key in env_example_txt

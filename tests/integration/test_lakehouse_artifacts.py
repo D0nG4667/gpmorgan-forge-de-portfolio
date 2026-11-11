@@ -228,6 +228,31 @@ def test_spark_streaming_job_implements_dlq_merge_and_checkpointing(
     monkeypatch.setenv("POLARIS_WAREHOUSE_LOCATION", f"file://{warehouse_dir.as_posix()}/")
     module = _load_spark_module_with_stubs(monkeypatch, path)
 
+    cfg = module.LakehouseStreamConfig.from_env(
+        {
+            "POLARIS_CATALOG_URI": "http://polaris-catalog:8181/api/catalog/",
+            "POLARIS_OAUTH_CREDENTIAL": "root:s3cr3t",
+            "SPARK_CATALOG": "forge_custom",
+            "HIGH_VALUE_THRESHOLD": "7500000.0000",
+        }
+    )
+    assert cfg.catalog == "forge_custom"
+    assert cfg.high_value_threshold == "7500000.0000"
+    assert cfg.resolved_management_uri == "http://polaris-catalog:8181/api/management/v1"
+    with pytest.raises(ValueError, match="Invalid SQL identifier"):
+        module.LakehouseStreamConfig(
+            catalog_uri="http://polaris-catalog:8181/api/catalog",
+            oauth_credential="root:s3cr3t",
+            catalog="forge; DROP TABLE x",
+        )
+    for bad_threshold in ("-1", "NaN", "Infinity"):
+        with pytest.raises(ValueError, match="HIGH_VALUE_THRESHOLD"):
+            module.LakehouseStreamConfig(
+                catalog_uri="http://polaris-catalog:8181/api/catalog",
+                oauth_credential="root:s3cr3t",
+                high_value_threshold=bad_threshold,
+            )
+
     recorded_requests: list[tuple[str, str, str]] = []
 
     class _FakeHTTPResponse:

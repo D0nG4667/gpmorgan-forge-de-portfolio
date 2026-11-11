@@ -77,8 +77,8 @@ class LakehouseStreamConfig:
             raise ValueError(
                 f"Invalid decimal HIGH_VALUE_THRESHOLD: {self.high_value_threshold!r}"
             ) from exc
-        if threshold <= 0:
-            raise ValueError("HIGH_VALUE_THRESHOLD must be strictly positive.")
+        if not threshold.is_finite() or threshold <= 0:
+            raise ValueError("HIGH_VALUE_THRESHOLD must be a finite positive decimal.")
 
     @property
     def resolved_management_uri(self) -> str:

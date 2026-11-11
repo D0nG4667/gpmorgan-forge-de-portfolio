@@ -245,12 +245,13 @@ def test_spark_streaming_job_implements_dlq_merge_and_checkpointing(
             oauth_credential="root:s3cr3t",
             catalog="forge; DROP TABLE x",
         )
-    with pytest.raises(ValueError, match="HIGH_VALUE_THRESHOLD"):
-        module.LakehouseStreamConfig(
-            catalog_uri="http://polaris-catalog:8181/api/catalog",
-            oauth_credential="root:s3cr3t",
-            high_value_threshold="-1",
-        )
+    for bad_threshold in ("-1", "NaN", "Infinity"):
+        with pytest.raises(ValueError, match="HIGH_VALUE_THRESHOLD"):
+            module.LakehouseStreamConfig(
+                catalog_uri="http://polaris-catalog:8181/api/catalog",
+                oauth_credential="root:s3cr3t",
+                high_value_threshold=bad_threshold,
+            )
 
     recorded_requests: list[tuple[str, str, str]] = []
 
